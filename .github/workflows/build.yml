@@ -7,7 +7,7 @@ on:
 
 jobs:
   wince-build:
-          name: Build WinCE ARM binaries (probe/usbwatch/bench/usbtest)
+    name: Build WinCE ARM binaries (probe/usbwatch/bench/usbtest)
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/enlyze/windows-ce-build-environment-arm
