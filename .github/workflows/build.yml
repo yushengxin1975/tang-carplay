@@ -1,0 +1,37 @@
+name: Build WinCE ARM binaries
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  wince-build:
+    name: Build probe.exe (CeGCC arm-mingw32ce)
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/enlyze/windows-ce-build-environment-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build probe.exe
+        run: |
+          cd probe
+          chmod +x build_probe.sh
+          ./build_probe.sh
+
+      - name: Verify PE is ARM WinCE
+        run: |
+          OD=/opt/cegcc-arm/bin/arm-mingw32ce-objdump
+          "$OD" -f probe/probe.exe | grep -qi "architecture: arm" || { echo "ERROR: not ARM"; exit 1; }
+          pe=$(od -An -tu4 -j60 -N4 probe/probe.exe | tr -d ' ')
+          subs=$(od -An -tu2 -j$((pe + 92)) -N2 probe/probe.exe | tr -d ' ')
+          echo "subsystem=$subs (9 = Windows CE GUI)"
+          [ "$subs" = "9" ] || { echo "ERROR: subsystem is not 9"; exit 1; }
+          echo "OK: ARM Windows CE PE produced"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tang-carplay-wince
+          path: probe/probe.exe
