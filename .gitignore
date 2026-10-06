@@ -1,5 +1,5 @@
 third_party/
-tools/
+dist/
 *.exe
 *.log
 *_log.txt
