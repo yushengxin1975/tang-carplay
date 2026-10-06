@@ -1,27 +1,24 @@
-/* bench.c — 唐2015 WinCE 性能/外设基准 v0.1 (Phase 3 前置)
+/* bench.c ????015 WinCE ???/?????? v0.1 (Phase 3 ???)
  *
- * 一次采集 Phase 3 需要的全部真车数据：
- *   S1 memcpy 吞吐      —— 内存带宽底线
- *   S2 BitBlt 全屏 fps   —— GDI 渲染上限（CarPlay 每帧都要走）
- *   S3 StretchBlt 放大 fps —— 小分辨率解码+放大渲染路径
- *   S4 MJPEG 解码 fps    —— 软解码能力代理（H.264 更重，此值为上界参考）
- *   S5 waveOut 音频      —— 440Hz 3 秒，听得到=音频输出 OK（CarPlay 音频路径）
- *   S6 触控采样          —— 点 5 下，验证坐标映射是否镜像/旋转
+ * ???????Phase 3 ???????????????? *   S1 memcpy ???      ?????????????
+ *   S2 BitBlt ??? fps   ????GDI ????????arPlay ?????????
+ *   S3 StretchBlt ??? fps ?????????????+?????????
+ *   S4 MJPEG ??? fps    ????????????????H.264 ?????????????????
+ *   S5 waveOut ???      ????440Hz 3 ?????????????? OK??arPlay ???????? *   S6 ??????          ??????5 ??????????????????/???
  *
- * 输出：EXE 同目录 bench_log.txt + 屏幕显示进度
- * 需要同目录 bench_frame.jpg（800x480 基线 JPEG）做 S4；缺失则跳过
+ * ?????XE ?????bench_log.txt + ?????????
+ * ???????? bench_frame.jpg??00x480 ??? JPEG??? S4?????????
  */
 
 #include <windows.h>
 #include <stdarg.h>
 #include <string.h>
 #include <stdio.h>
-#include <process.h>
 
-/* nanojpeg（MIT, KeyJ v1.3.5, 自 carlive vendor）直接包含 */
+/* nanojpeg??IT, KeyJ v1.3.5, ??carlive vendor????????*/
 #include "nanojpeg.c"
 
-/* ---------------- 日志 ---------------- */
+/* ---------------- ??? ---------------- */
 static HANDLE g_hLog = INVALID_HANDLE_VALUE;
 static DWORD  g_startTick = 0;
 static void LogInit(void) {
@@ -50,7 +47,7 @@ static void Log(const char *fmt, ...) {
     FlushFileBuffers(g_hLog);
 }
 
-/* ---------------- wave API 手工声明（避免 mmsystem.h 差异） ---------------- */
+/* ---------------- wave API ???????????mmsystem.h ?????---------------- */
 typedef struct { WORD wFormatTag, nChannels; DWORD nSamplesPerSec, nAvgBytesPerSec;
                  WORD nBlockAlign, wBitsPerSample, cbSize; } BENCH_WAVEFORMATEX;
 typedef struct BENCH_WAVEHDR { LPVOID lpData; DWORD dwBufferLength, dwBytesRecorded;
@@ -62,18 +59,18 @@ typedef UINT (WINAPI *PFN_waveOutClose)(HANDLE);
 #define MMSYSERR_NOERROR 0
 #define WHDR_DONE 1
 
-/* ---------------- 计时 ---------------- */
+/* ---------------- ??? ---------------- */
 static DWORD NowMs(void) { return GetTickCount(); }
-/* 跑 fn 风格没法内联，直接每阶段手写循环 */
+/* ??fn ???????????????????????? */
 
-/* ---------------- GUI 状态 ---------------- */
+/* ---------------- GUI ????---------------- */
 static HWND  g_hwnd = NULL;
 static volatile BOOL g_running = TRUE;
 static volatile BOOL g_done = FALSE;
 static CRITICAL_SECTION g_cs;
-static char  g_lines[6][96];      /* 屏幕上最多 6 行状态 */
+static char  g_lines[6][96];      /* ????????6 ?????*/
 static volatile int  g_tapCount = 0;
-static int   g_taps[8][2];        /* 记录触点 */
+static int   g_taps[8][2];        /* ?????? */
 
 static void SetLine(int i, const char *fmt, ...) {
     if (i < 0 || i > 5) return;
@@ -91,7 +88,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_LBUTTONDOWN: {
         SHORT x = (SHORT)LOWORD(lp), y = (SHORT)HIWORD(lp);
-        if (g_done) { PostQuitMessage(0); return 0; }   /* 收尾后的任意点击=退出 */
+        if (g_done) { PostQuitMessage(0); return 0; }   /* ????????????=????*/
         if (g_tapCount < 8) {
             g_taps[g_tapCount][0] = x;
             g_taps[g_tapCount][1] = y;
@@ -119,7 +116,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             MultiByteToWideChar(CP_ACP, 0, tmp[i], -1, w, 96);
             ExtTextOutW(hdc, 10, 10 + i * 28, 0, NULL, w, wcslen(w), NULL);
         }
-        /* 触点画圈，肉眼核对位置是否跟手 */
+        /* ???????????????????????*/
         HPEN pen = CreatePen(PS_SOLID, 3, RGB(255, 0, 0));
         SelectObject(hdc, pen);
         for (int i = 0; i < g_tapCount && i < 8; i++)
@@ -136,9 +133,9 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProc(h, msg, wp, lp);
 }
 
-/* ---------------- 各阶段 ---------------- */
+/* ---------------- ?????---------------- */
 
-static int g_w = 800, g_h = 480;   /* 实际屏幕尺寸，S1/S2 用 */
+static int g_w = 800, g_h = 480;   /* ???????????1/S2 ??*/
 
 static void StageMemcopy(void) {
     SetLine(0, "S1 memcpy...");
@@ -163,7 +160,7 @@ static void StageBlit(void) {
     Log("--- S2 BitBlt / S3 StretchBlt ---");
     HDC hdcScreen = GetDC(NULL);
     HDC hdcMem = CreateCompatibleDC(hdcScreen);
-    /* 16bpp 565 DIB，尺寸=实际屏幕 */
+    /* 16bpp 565 DIB??????????? */
     struct { BITMAPINFOHEADER h; DWORD mask[3]; } bi;
     memset(&bi, 0, sizeof(bi));
     bi.h.biSize = sizeof(BITMAPINFOHEADER);
@@ -179,7 +176,7 @@ static void StageBlit(void) {
         goto out;
     }
     SelectObject(hdcMem, hbmp);
-    /* 填渐变 */
+    /* ?????*/
     {
         unsigned short *p = (unsigned short *)bits;
         for (int y = 0; y < g_h; y++)
@@ -187,7 +184,7 @@ static void StageBlit(void) {
                 p[y * g_w + x] =
                     (unsigned short)(((x * 31 / g_w) << 11) | ((y * 63 / g_h) << 5) | 15);
     }
-    /* S2: 全屏 BitBlt */
+    /* S2: ??? BitBlt */
     SetLine(1, "S2 BitBlt running...");
     {
         const int N = 100;
@@ -199,7 +196,7 @@ static void StageBlit(void) {
         Log("S2 RESULT: BitBlt %dx%d x%d in %ums = %.1f fps", g_w, g_h, N, dt, fps);
         SetLine(1, "S2 BitBlt: %.1f fps", fps);
     }
-    /* S3: 半尺寸放大 */
+    /* S3: ????????*/
     SetLine(2, "S3 StretchBlt running...");
     {
         const int N = 60;
@@ -222,7 +219,7 @@ out:
 static void StageMjpeg(void) {
     Log("--- S4 MJPEG ---");
     SetLine(3, "S4 mjpeg...");
-    /* 读同目录 bench_frame.jpg */
+    /* ?????? bench_frame.jpg */
     WCHAR wpath[MAX_PATH] = {0};
     if (GetModuleFileName(NULL, wpath, MAX_PATH)) {
         WCHAR *slash = wcsrchr(wpath, L'\\');
@@ -244,7 +241,7 @@ static void StageMjpeg(void) {
     CloseHandle(hf);
     if (rd != size) { LocalFree(buf); Log("S4 SKIP: read %u/%u", rd, size); return; }
 
-    /* 先解一帧拿尺寸 */
+    /* ??????????? */
     njInit();
     if (njDecode(buf, (int)size) != NJ_OK) {
         njDone(); LocalFree(buf);
@@ -288,7 +285,7 @@ static void StageAudio(void) {
     DWORD nBytes = nSamples * 2;
     short *pcm = (short *)LocalAlloc(LMEM_FIXED, nBytes);
     if (!pcm) { Log("S5 SKIP: alloc"); return; }
-    /* 整数正弦表 256 点，440Hz */
+    /* ????????256 ???440Hz */
     static short sineTab[256];
     static BOOL tabInit = FALSE;
     if (!tabInit) {
@@ -303,7 +300,7 @@ static void StageAudio(void) {
         tabInit = TRUE;
     }
     for (DWORD i = 0; i < nSamples; i++)
-        pcm[i] = sineTab[(i * 440u * 256u / RATE) & 255];   /* 440Hz 相位递进 */
+        pcm[i] = sineTab[(i * 440u * 256u / RATE) & 255];   /* 440Hz ?????? */
 
     BENCH_WAVEFORMATEX wf;
     memset(&wf, 0, sizeof(wf));
@@ -335,7 +332,7 @@ static void StageAudio(void) {
     while (NowMs() - t0 < 3500 && !(hdr.dwFlags & WHDR_DONE)) Sleep(100);
     pClose(hWave);
     Log("S5 done. HEARD tone? -> audio path %s",
-        rcw == MMSYSERR_NOERROR ? "likely OK (确认耳朵听到)" : "write failed");
+        rcw == MMSYSERR_NOERROR ? "likely OK (?????????)" : "write failed");
     SetLine(4, "S5 audio rc=%u (hear it?)", rcw);
     LocalFree(pcm);
 }
@@ -351,16 +348,16 @@ static void StageTouch(void) {
 }
 
 /* ---------------- worker ---------------- */
-static unsigned __stdcall BenchThread(void *arg) {
+static DWORD WINAPI BenchThread(LPVOID arg) {
     (void)arg;
-    Sleep(500);   /* 等窗口起稳 */
+    Sleep(500);   /* ????????*/
     Log("==== bench v0.1 start screen=%dx%d ====", g_w, g_h);
     StageMemcopy();
     StageBlit();
     StageMjpeg();
     StageAudio();
     StageTouch();
-    Log("==== bench done %u ms — tap screen to exit ====", GetTickCount() - g_startTick);
+    Log("==== bench done %u ms ??tap screen to exit ====", GetTickCount() - g_startTick);
     SetLine(0, "DONE - tap to exit");
     if (g_hLog != INVALID_HANDLE_VALUE) CloseHandle(g_hLog);
     g_hLog = INVALID_HANDLE_VALUE;
@@ -389,14 +386,14 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmd, int nShow) {
     ShowWindow(g_hwnd, SW_SHOW);
     UpdateWindow(g_hwnd);
 
-    HANDLE th = (HANDLE)_beginthreadex(NULL, 0, BenchThread, NULL, 0, NULL);
+    HANDLE th = CreateThread(NULL, 256*1024, BenchThread, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
 
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0) > 0) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
-    g_running = FALSE;   /* 通知 worker 停（若还在跑） */
+    g_running = FALSE;   /* ??? worker ???????????*/
     if (th) { WaitForSingleObject(th, 45000); CloseHandle(th); }
     if (g_hLog != INVALID_HANDLE_VALUE) CloseHandle(g_hLog);
     return 0;

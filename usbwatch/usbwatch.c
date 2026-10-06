@@ -1,27 +1,23 @@
-/* usbwatch.c — 唐2015 WinCE USB/设备监测器 v0.1 (Phase 1 前置)
+/* usbwatch.c ????015 WinCE USB/????????v0.1 (Phase 1 ???)
  *
- * 一次性采集 Phase 1 需要的全部真车 USB 数据，避免二次上车：
- *   1. 启动即全量 dump: HKLM\Drivers\Active + HKLM\Drivers\USB 递归(深度3)
- *   2. 常驻轮询(400ms): Drivers\Active 变化 / 存储挂载变化 → 带时间戳记录
- *      上车流程: 启动本程序 → 插 iPhone → 等 15s → 拔 → 等 5s → (换口重复)
- *               → 插 U盘(对照) → 等 10s → 拔 → 点屏幕退出
- *   3. 退出时再全量 dump 一次，前后对照
+ * ?????????Phase 1 ??????????? USB ???????????????
+ *   1. ????????dump: HKLM\Drivers\Active + HKLM\Drivers\USB ???(???3)
+ *   2. ??????(400ms): Drivers\Active ??? / ????????? ???????????
+ *      ??????: ????????????iPhone ????15s ????????5s ??(??????)
+ *               ????U?????) ????10s ??????????????? *   3. ??????????dump ???????????
  *
- * 判读（回家看 usbwatch_log.txt）:
- *   - 插 iPhone 时出现新 Active 项/USB 子键 → USB host 能枚举苹果设备 ✓
- *   - 插 iPhone 完全无变化 → 该口对 iPhone 无枚举（换口/换线/带PDU hub再试）
- *   - 顺带确认: iPhone 是否充电、是否弹"此配件不受支持"（拍照记录）
+ * ????????? usbwatch_log.txt??
+ *   - ??iPhone ?????? Active ??USB ??? ??USB host ????????????? *   - ??iPhone ???????????????iPhone ?????????/???/??DU hub????? *   - ??????: iPhone ????????????"????????????????????
  *
- * 交互：屏幕显示运行状态，点一下 = 退出（也会在 240s 后自动退出）
+ * ???????????????????????= ??????????240s ??????????
  */
 
 #include <windows.h>
 #include <stdarg.h>
 #include <string.h>
 #include <stdio.h>
-#include <process.h>
 
-/* ---------------- 日志（carlive 模式） ---------------- */
+/* ---------------- ?????arlive ?????---------------- */
 static HANDLE g_hLog = INVALID_HANDLE_VALUE;
 static DWORD  g_startTick = 0;
 
@@ -49,7 +45,7 @@ static void Log(const char *fmt, ...) {
                       (GetTickCount() - g_startTick) % 1000, msg);
     if (m < 0) m = 0;
     DWORD wr; WriteFile(g_hLog, line, (DWORD)m, &wr, NULL);
-    FlushFileBuffers(g_hLog);   /* 采集程序必须每条落盘 */
+    FlushFileBuffers(g_hLog);   /* ??????????????? */
 }
 static void W2A(const WCHAR *w, char *a, unsigned cap) {
     unsigned i = 0;
@@ -58,7 +54,7 @@ static void W2A(const WCHAR *w, char *a, unsigned cap) {
     a[i] = 0;
 }
 
-/* ---------------- 状态快照与 diff ---------------- */
+/* ---------------- ???????? diff ---------------- */
 
 #define MAX_SNAP 128
 typedef struct {
@@ -68,7 +64,7 @@ typedef struct {
 static SNAPITEM g_snap[MAX_SNAP];
 static int      g_snapN = 0;
 
-/* 快照生成：Drivers\Active 每项(key) + Name|Dll|Bus(val)，再加挂载点 */
+/* ????????rivers\Active ???(key) + Name|Dll|Bus(val)????????? */
 static int TakeSnapshot(SNAPITEM *items, int max) {
     int n = 0;
     HKEY hk;
@@ -97,7 +93,7 @@ static int TakeSnapshot(SNAPITEM *items, int max) {
         }
         RegCloseKey(hk);
     }
-    /* 挂载点作为 MOUNT 项参与 diff */
+    /* ????????MOUNT ?????diff */
     static const WCHAR *dirs[] = { L"\\Storage Card", L"\\SDMMC", L"\\SDMEM",
         L"\\USB Storage", L"\\USBHD", L"\\Hard Disk", L"\\SD Card", L"\\SDMemory", L"\\SDMemory2" };
     for (int i = 0; i < 9 && n < max; i++) {
@@ -114,7 +110,7 @@ static int TakeSnapshot(SNAPITEM *items, int max) {
     return n;
 }
 
-/* 快照对比：isBaseline=1 全量打印，否则只打印增/删 */
+/* ????????sBaseline=1 ???????????????????*/
 static void DiffAndReport(int isBaseline, const char *tag) {
     SNAPITEM cur[MAX_SNAP];
     int curN = TakeSnapshot(cur, MAX_SNAP);
@@ -126,14 +122,14 @@ static void DiffAndReport(int isBaseline, const char *tag) {
         g_snapN = curN;
         return;
     }
-    for (int i = 0; i < curN; i++) {          /* 新增 */
+    for (int i = 0; i < curN; i++) {          /* ??? */
         int found = 0;
         for (int j = 0; j < g_snapN; j++)
             if (strcmp(cur[i].key, g_snap[j].key) == 0 &&
                 strcmp(cur[i].val, g_snap[j].val) == 0) { found = 1; break; }
         if (!found) Log("+++ ADDED   %s = %s", cur[i].key, cur[i].val);
     }
-    for (int j = 0; j < g_snapN; j++) {          /* 消失 */
+    for (int j = 0; j < g_snapN; j++) {          /* ??? */
         int found = 0;
         for (int i = 0; i < curN; i++)
             if (strcmp(cur[i].key, g_snap[j].key) == 0 &&
@@ -144,7 +140,7 @@ static void DiffAndReport(int isBaseline, const char *tag) {
     g_snapN = curN;
 }
 
-/* ---------------- HKLM\Drivers\USB 递归 dump（深度3，限300行） ---------------- */
+/* ---------------- HKLM\Drivers\USB ??? dump????????300??? ---------------- */
 static int g_usbLines = 0;
 static void DumpUsbTree(HKEY root, const WCHAR *sub, int depth) {
     if (depth > 3 || g_usbLines > 300) return;
@@ -153,7 +149,7 @@ static void DumpUsbTree(HKEY root, const WCHAR *sub, int depth) {
     char asub[168]; W2A(sub, asub, sizeof(asub));
     Log("  USBTREE: %s", asub);
     g_usbLines++;
-    /* 先列本键的值 */
+    /* ??????????*/
     static const WCHAR *vn[4] = { L"Dll", L"Prefix", L"VID", L"PID" };
     for (int i = 0; i < 4; i++) {
         WCHAR buf[96]; DWORD sz = sizeof(buf); DWORD type;
@@ -200,7 +196,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         EnterCriticalSection(&g_csStatus);
         strcpy(s, g_status);
         LeaveCriticalSection(&g_csStatus);
-        /* CE 是 Unicode-only：窄字符先转宽 */
+        /* CE ??Unicode-only???????????*/
         WCHAR ws[160];
         MultiByteToWideChar(CP_ACP, 0, s, -1, ws, 160);
         ExtTextOutW(hdc, 20, rc.bottom / 2 - 20, 0, NULL, ws, wcslen(ws), NULL);
@@ -221,8 +217,8 @@ static void SetStatus(const char *s) {
     if (g_hwnd) InvalidateRect(g_hwnd, NULL, FALSE);
 }
 
-/* 工作线程：基线 → 轮询 diff → 超时 */
-static unsigned __stdcall WatchThread(void *arg) {
+/* ???????????????? diff ????? */
+static DWORD WINAPI WatchThread(LPVOID arg) {
     (void)arg;
     Log("==== usbwatch v0.1 start ====");
     Log("STEP1: baseline dump");
@@ -230,9 +226,9 @@ static unsigned __stdcall WatchThread(void *arg) {
 
     Log("STEP2: USB registry tree");
     DumpUsbTree(HKEY_LOCAL_MACHINE, L"Drivers\\USB", 0);
-    if (g_usbLines == 0) Log("  (HKLM\\Drivers\\USB 不存在或为空)");
+    if (g_usbLines == 0) Log("  (HKLM\\Drivers\\USB ?????????)");
 
-    Log("STEP3: polling 400ms — 请按 ONETRIP.md 顺序插拔设备");
+    Log("STEP3: polling 400ms ????? ONETRIP.md ?????????");
     SetStatus("WATCHING - plug/unplug devices, tap to stop");
     int ticks = 0;
     while (g_running && ticks < 600) {   /* 600*400ms = 240s */
@@ -275,7 +271,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmd, int nShow) {
     ShowWindow(g_hwnd, nShow ? nShow : SW_SHOW);
     UpdateWindow(g_hwnd);
 
-    HANDLE th = (HANDLE)_beginthreadex(NULL, 0, WatchThread, NULL, 0, NULL);
+    HANDLE th = CreateThread(NULL, 256*1024, WatchThread, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
 
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0) > 0) {
@@ -283,7 +279,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmd, int nShow) {
         DispatchMessage(&msg);
         if (!g_running) break;
     }
-    /* 工作线程自己会退出（240s 超时）；tap 触发的 g_running=FALSE 让它尽快收敛 */
+    /* ????????????????240s ??????tap ?????g_running=FALSE ????????? */
     if (th) { WaitForSingleObject(th, 3000); CloseHandle(th); }
     if (g_hLog != INVALID_HANDLE_VALUE) CloseHandle(g_hLog);
     return 0;
