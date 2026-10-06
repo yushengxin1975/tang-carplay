@@ -1,4 +1,4 @@
-/* bench.c ????015 WinCE ???/?????? v0.1 (Phase 3 ???)
+﻿/* bench.c ????015 WinCE ???/?????? v0.1 (Phase 3 ???)
  *
  * ???????Phase 3 ???????????????? *   S1 memcpy ???      ?????????????
  *   S2 BitBlt ??? fps   ????GDI ????????arPlay ?????????
@@ -19,34 +19,6 @@
 #include "nanojpeg.c"
 
 /* ---------------- ??? ---------------- */
-static HANDLE g_hLog = INVALID_HANDLE_VALUE;
-static DWORD  g_startTick = 0;
-static void LogInit(void) {
-    WCHAR path[MAX_PATH] = {0};
-    g_startTick = GetTickCount();
-    if (GetModuleFileName(NULL, path, MAX_PATH)) {
-        WCHAR *dot = wcsrchr(path, L'.');
-        if (dot) *dot = 0;
-        wcscat(path, L"_log.txt");
-    } else wcscpy(path, L"bench_log.txt");
-    g_hLog = CreateFile(path, GENERIC_WRITE, FILE_SHARE_READ, NULL,
-                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-}
-static void Log(const char *fmt, ...) {
-    if (g_hLog == INVALID_HANDLE_VALUE) return;
-    char msg[512];
-    va_list ap; va_start(ap, fmt);
-    int n = _vsnprintf(msg, sizeof(msg) - 1, fmt, ap);
-    va_end(ap);
-    if (n < 0) n = 0; msg[n] = 0;
-    char line[600];
-    int m = _snprintf(line, sizeof(line) - 1, "[t+%u] %s\r\n",
-                      GetTickCount() - g_startTick, msg);
-    if (m < 0) m = 0;
-    DWORD wr; WriteFile(g_hLog, line, (DWORD)m, &wr, NULL);
-    FlushFileBuffers(g_hLog);
-}
-
 /* ---------------- wave API ???????????mmsystem.h ?????---------------- */
 typedef struct { WORD wFormatTag, nChannels; DWORD nSamplesPerSec, nAvgBytesPerSec;
                  WORD nBlockAlign, wBitsPerSample, cbSize; } BENCH_WAVEFORMATEX;
@@ -92,7 +64,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (g_tapCount < 8) {
             g_taps[g_tapCount][0] = x;
             g_taps[g_tapCount][1] = y;
-            Log("TAP %d: (%d, %d)", g_tapCount + 1, x, y);
+            
         }
         g_tapCount++;
         InvalidateRect(h, NULL, FALSE);
@@ -139,11 +111,10 @@ static int g_w = 800, g_h = 480;   /* ???????????1/S2 ??*/
 
 static void StageMemcopy(void) {
     SetLine(0, "S1 memcpy...");
-    Log("--- S1 memcpy ---");
     DWORD bytes = 800u * 480u * 2u;
     BYTE *src = (BYTE *)LocalAlloc(LMEM_FIXED, bytes);
     BYTE *dst = (BYTE *)LocalAlloc(LMEM_FIXED, bytes);
-    if (!src || !dst) { Log("S1 SKIP: alloc failed"); SetLine(0, "S1 SKIP alloc"); return; }
+    if (!src || !dst) {  SetLine(0, "S1 SKIP alloc"); return; }
     memset(src, 0xA5, bytes);
     const int N = 60;
     DWORD t0 = NowMs();
@@ -151,13 +122,11 @@ static void StageMemcopy(void) {
     DWORD dt = NowMs() - t0;
     if (dt == 0) dt = 1;
     double mbps = (double)N * bytes / 1024.0 / 1024.0 / (dt / 1000.0);
-    Log("S1 RESULT: %d x %uKB in %ums = %.1f MB/s", N, bytes / 1024, dt, mbps);
     SetLine(0, "S1 memcpy: %.1f MB/s", mbps);
     LocalFree(src); LocalFree(dst);
 }
 
 static void StageBlit(void) {
-    Log("--- S2 BitBlt / S3 StretchBlt ---");
     HDC hdcScreen = GetDC(NULL);
     HDC hdcMem = CreateCompatibleDC(hdcScreen);
     /* 16bpp 565 DIB??????????? */
@@ -171,7 +140,7 @@ static void StageBlit(void) {
     void *bits = NULL;
     HBITMAP hbmp = CreateDIBSection(hdcScreen, (BITMAPINFO *)&bi, DIB_RGB_COLORS, &bits, NULL, 0);
     if (!hbmp || !bits) {
-        Log("S2 SKIP: CreateDIBSection failed err=%u", GetLastError());
+        
         SetLine(1, "S2 SKIP dib err=%u", GetLastError());
         goto out;
     }
@@ -193,7 +162,6 @@ static void StageBlit(void) {
             BitBlt(hdcScreen, 0, 0, g_w, g_h, hdcMem, 0, 0, SRCCOPY);
         DWORD dt = NowMs() - t0; if (!dt) dt = 1;
         double fps = (double)N * 1000.0 / dt;
-        Log("S2 RESULT: BitBlt %dx%d x%d in %ums = %.1f fps", g_w, g_h, N, dt, fps);
         SetLine(1, "S2 BitBlt: %.1f fps", fps);
     }
     /* S3: ????????*/
@@ -206,8 +174,6 @@ static void StageBlit(void) {
                        hdcMem, 0, 0, g_w / 2, g_h / 2, SRCCOPY);
         DWORD dt = NowMs() - t0; if (!dt) dt = 1;
         double fps = (double)N * 1000.0 / dt;
-        Log("S3 RESULT: StretchBlt %dx%d->%dx%d x%d in %ums = %.1f fps",
-            g_w / 2, g_h / 2, g_w, g_h, N, dt, fps);
         SetLine(2, "S3 Stretch: %.1f fps", fps);
     }
     if (hbmp) DeleteObject(hbmp);
@@ -217,7 +183,6 @@ out:
 }
 
 static void StageMjpeg(void) {
-    Log("--- S4 MJPEG ---");
     SetLine(3, "S4 mjpeg...");
     /* ?????? bench_frame.jpg */
     WCHAR wpath[MAX_PATH] = {0};
@@ -229,29 +194,28 @@ static void StageMjpeg(void) {
     HANDLE hf = CreateFile(wpath, GENERIC_READ, FILE_SHARE_READ, NULL,
                            OPEN_EXISTING, 0, NULL);
     if (hf == INVALID_HANDLE_VALUE) {
-        Log("S4 SKIP: bench_frame.jpg not found");
         SetLine(3, "S4 SKIP no jpg");
         return;
     }
     DWORD size = GetFileSize(hf, NULL);
-    if (size == 0 || size > 1024u * 1024u) { CloseHandle(hf); Log("S4 SKIP: size %u", size); return; }
+    if (size == 0 || size > 1024u * 1024u) { CloseHandle(hf);  return; }
     BYTE *buf = (BYTE *)LocalAlloc(LMEM_FIXED, size);
     DWORD rd = 0;
     ReadFile(hf, buf, size, &rd, NULL);
     CloseHandle(hf);
-    if (rd != size) { LocalFree(buf); Log("S4 SKIP: read %u/%u", rd, size); return; }
+    if (rd != size) { LocalFree(buf);  return; }
 
     /* ??????????? */
     njInit();
     if (njDecode(buf, (int)size) != NJ_OK) {
         njDone(); LocalFree(buf);
-        Log("S4 FAIL: njDecode error (baseline JPEG only)");
+        
         SetLine(3, "S4 FAIL decode");
         return;
     }
     int jw = njGetWidth(), jh = njGetHeight();
     njDone();
-    Log("S4 jpeg %dx%d (%u bytes)", jw, jh, size);
+    
 
     const int N = 30;
     DWORD t0 = NowMs();
@@ -262,29 +226,27 @@ static void StageMjpeg(void) {
     }
     DWORD dt = NowMs() - t0; if (!dt) dt = 1;
     double fps = (double)N * 1000.0 / dt;
-    Log("S4 RESULT: MJPEG %dx%d x%d in %ums = %.1f fps", jw, jh, N, dt, fps);
     SetLine(3, "S4 mjpeg: %.1f fps", fps);
     LocalFree(buf);
 }
 
 static void StageAudio(void) {
-    Log("--- S5 waveOut ---");
     SetLine(4, "S5 tone...");
     HMODULE mm = GetModuleHandle(L"coredll.dll");
     if (!mm) mm = LoadLibrary(L"coredll.dll");
-    if (!mm) { Log("S5 SKIP: no coredll"); SetLine(4, "S5 SKIP"); return; }
+    if (!mm) {  SetLine(4, "S5 SKIP"); return; }
     PFN_waveOutOpen pOpen = (PFN_waveOutOpen)GetProcAddress(mm, L"waveOutOpen");
     PFN_waveOutPrepareHeader pPrep = (PFN_waveOutPrepareHeader)GetProcAddress(mm, L"waveOutPrepareHeader");
     PFN_waveOutWrite pWrite = (PFN_waveOutWrite)GetProcAddress(mm, L"waveOutWrite");
     PFN_waveOutClose pClose = (PFN_waveOutClose)GetProcAddress(mm, L"waveOutClose");
     if (!pOpen || !pPrep || !pWrite || !pClose) {
-        Log("S5 SKIP: waveOut API missing"); SetLine(4, "S5 SKIP api"); return;
+         SetLine(4, "S5 SKIP api"); return;
     }
     const int RATE = 22050, SECS = 3;
     DWORD nSamples = (DWORD)RATE * SECS;
     DWORD nBytes = nSamples * 2;
     short *pcm = (short *)LocalAlloc(LMEM_FIXED, nBytes);
-    if (!pcm) { Log("S5 SKIP: alloc"); return; }
+    if (!pcm) {  return; }
     /* ????????256 ???440Hz */
     static short sineTab[256];
     static BOOL tabInit = FALSE;
@@ -313,8 +275,7 @@ static void StageAudio(void) {
 
     HANDLE hWave = NULL;
     UINT rc = pOpen(&hWave, (UINT)-1 /*WAVE_MAPPER*/, &wf, 0, 0, 0 /*CALLBACK_NULL*/);
-    Log("S5 waveOutOpen rc=%u (%s)", rc,
-        rc == MMSYSERR_NOERROR ? "OK" : "FAILED");
+    
     if (rc != MMSYSERR_NOERROR || !hWave) {
         SetLine(4, "S5 audio FAILED rc=%u", rc);
         LocalFree(pcm);
@@ -326,24 +287,22 @@ static void StageAudio(void) {
     hdr.dwBufferLength = nBytes;
     pPrep(hWave, &hdr, sizeof(hdr));
     UINT rcw = pWrite(hWave, &hdr, sizeof(hdr));
-    Log("S5 waveOutWrite rc=%u, playing 3s (listen!)", rcw);
+    
     SetLine(4, "S5 tone PLAYING - listen");
     DWORD t0 = NowMs();
     while (NowMs() - t0 < 3500 && !(hdr.dwFlags & WHDR_DONE)) Sleep(100);
     pClose(hWave);
-    Log("S5 done. HEARD tone? -> audio path %s",
-        rcw == MMSYSERR_NOERROR ? "likely OK (?????????)" : "write failed");
+    
     SetLine(4, "S5 audio rc=%u (hear it?)", rcw);
     LocalFree(pcm);
 }
 
 static void StageTouch(void) {
-    Log("--- S6 touch: tap 5 points (4 corners + center) ---");
+    
     SetLine(5, "S6 tap 5 points!");
     g_tapCount = 0;
     DWORD t0 = NowMs();
     while (g_tapCount < 5 && NowMs() - t0 < 40000 && g_running) Sleep(200);
-    Log("S6 RESULT: %d taps collected", g_tapCount);
     SetLine(5, "S6 taps: %d (see log/circles)", g_tapCount);
 }
 
@@ -351,16 +310,13 @@ static void StageTouch(void) {
 static DWORD WINAPI BenchThread(LPVOID arg) {
     (void)arg;
     Sleep(500);   /* ????????*/
-    Log("==== bench v0.1 start screen=%dx%d ====", g_w, g_h);
     StageMemcopy();
     StageBlit();
     StageMjpeg();
     StageAudio();
     StageTouch();
-    Log("==== bench done %u ms ??tap screen to exit ====", GetTickCount() - g_startTick);
+    
     SetLine(0, "DONE - tap to exit");
-    if (g_hLog != INVALID_HANDLE_VALUE) CloseHandle(g_hLog);
-    g_hLog = INVALID_HANDLE_VALUE;
     g_done = TRUE;
     return 0;
 }
@@ -378,7 +334,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmd, int nShow) {
     g_h = GetSystemMetrics(SM_CYSCREEN);
 
     InitializeCriticalSection(&g_cs);
-    LogInit();
     strcpy(g_lines[0], "bench starting...");
 
     g_hwnd = CreateWindowW(WC_BENCH, L"bench", WS_VISIBLE | WS_CAPTION,
@@ -395,6 +350,5 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmd, int nShow) {
     }
     g_running = FALSE;   /* ??? worker ???????????*/
     if (th) { WaitForSingleObject(th, 45000); CloseHandle(th); }
-    if (g_hLog != INVALID_HANDLE_VALUE) CloseHandle(g_hLog);
     return 0;
 }
