@@ -1,22 +1,15 @@
-/* probe.c — 唐2015 WinCE 车机环境探针 v0.1 (Phase 0)
+/* probe.c — 唐2015 WinCE 车机环境探针 v0.2 (零写盘版)
  *
- * 目标：上车一次跑完，回答直连 CarPlay 的全部前提问题：
- *   1. CE 内核版本（期望 6.0；5.0/7.0 也能继续但需调整）
- *   2. CPU 架构/型号（期望 ARM；ARMv6/ARMv7 决定 ffmpeg 优化档位）
- *   3. 内存（H.264 软解至少要 64MB 可用）
- *   4. 屏幕分辨率/色深（决定 CarPlay 请求的 canvas）
- *   5. USB host 驱动是否加载（注册表 Drivers\Active + BuiltIn 扫描）— Phase 1 生死判定
- *   6. 存储卡挂载点（U盘启动路径）+ 关键 DLL 存在性（ddraw/ws2 等）
- *   7. 当前进程列表（找原车 launcher/导航进程名，后续集成入口）
+ * 与 v0.1 关键区别：不创建任何文件到 TF 卡。
+ * 所有结论：1. 屏幕常驻显示 5 行关键指标 + VERDICT
+ *          2. 退出时无任何写盘动作
  *
- * 输出：
- *   - EXE 同目录 probe_log.txt（ASCII，带回车换行）
- *   - 弹窗显示关键结论，点确定退出
+ * 触发 BYD 防破解的可能性（v0.1）：
+ *   - 在 \gps_byd\ 创建了新文件 probe_log.txt → FAT 写入
+ *   - FlushFileBuffers 每行日志都刷盘 → 多次 FAT 元数据更新
+ * v0.2 取消所有磁盘写入，包括 log 文件。
  *
- * 编码约定（继承 carlive 真机经验）：
- *   - 日志一律窄字符（char），宽字符降级 '?' 再落盘，防 CeGCC %ls 崩溃
- *   - 日志前 3 秒强制 FlushFileBuffers，防"启动即崩、日志全丢"
- *   - 全部宽 API（CE 是 Unicode-only）
+ * 代价：用户需拍照屏幕才能保留结论，不再有 log 文件。
  */
 
 #include <windows.h>
@@ -24,337 +17,282 @@
 #include <string.h>
 #include <stdio.h>
 
-/* ---------------- 日志（照抄 carlive 验证过的模式，精简版） ---------------- */
-
-static HANDLE g_hLog = INVALID_HANDLE_VALUE;
-static DWORD  g_startTick = 0;
-
-static void LogInit(void) {
-    WCHAR path[MAX_PATH] = {0};
-    g_startTick = GetTickCount();
-    if (GetModuleFileName(NULL, path, MAX_PATH)) {
-        WCHAR *dot = wcsrchr(path, L'.');
-        if (dot) *dot = 0;
-        wcscat(path, L"_log.txt");
-    } else {
-        wcscpy(path, L"probe_log.txt");
-    }
-    g_hLog = CreateFile(path, GENERIC_WRITE, FILE_SHARE_READ, NULL,
-                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-}
-
-static void Log(const char *fmt, ...) {
-    if (g_hLog == INVALID_HANDLE_VALUE) return;
-    char msg[512];
-    va_list ap; va_start(ap, fmt);
-    int n = _vsnprintf(msg, sizeof(msg) - 1, fmt, ap);
-    va_end(ap);
-    if (n < 0) n = 0;
-    if ((size_t)n > sizeof(msg) - 1) n = (int)(sizeof(msg) - 1);
-    msg[n] = 0;
-
-    char line[600];
-    int m = _snprintf(line, sizeof(line) - 1, "[t+%u] %s\r\n",
-                      GetTickCount() - g_startTick, msg);
-    if (m < 0) m = 0;
-    DWORD wr = 0;
-    WriteFile(g_hLog, line, (DWORD)m, &wr, NULL);
-    /* 启动 3 秒内每条都刷盘：探测过程短，不能丢任何一行 */
-    if (GetTickCount() - g_startTick < 3000) FlushFileBuffers(g_hLog);
-}
-
-/* 宽→窄降级（非 ASCII 变 '?'，carlive R28 教训） */
-static void W2A(const WCHAR *w, char *a, unsigned cap) {
+static void W2A_local(const WCHAR *w, char *a, unsigned cap) {
     unsigned i = 0;
     if (!a || cap == 0) return;
-    while (w && w[i] && i < cap - 1) {
-        unsigned short v = (unsigned short)w[i];
-        a[i] = (v < 0x80) ? (char)v : '?';
-        i++;
-    }
+    while (w && w[i] && i < cap - 1) { unsigned short v = (unsigned short)w[i]; a[i] = (v < 0x80) ? (char)v : '?'; i++; }
     a[i] = 0;
 }
 
-/* ---------------- 探测项 ---------------- */
+/* GUI 状态 */
+static HWND g_hwnd = NULL;
+static CRITICAL_SECTION g_cs;
+static char g_lines[8][120];
 
-static void DumpVersion(void) {
+static void SetLine(int i, const char *fmt, ...) {
+    if (i < 0 || i > 7) return;
+    EnterCriticalSection(&g_cs);
+    va_list ap; va_start(ap, fmt);
+    _vsnprintf(g_lines[i], 119, fmt, ap);
+    va_end(ap);
+    LeaveCriticalSection(&g_cs);
+    if (g_hwnd) InvalidateRect(g_hwnd, NULL, FALSE);
+}
+
+#define WC_PROBE L"PROBE"
+
+static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+    case WM_LBUTTONDOWN:
+        PostQuitMessage(0);
+        return 0;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(h, &ps);
+        RECT rc; GetClientRect(h, &rc);
+        HBRUSH br = CreateSolidBrush(RGB(0, 0, 40));
+        FillRect(hdc, &rc, br);
+        DeleteObject(br);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(255, 255, 0));
+        char tmp[8][120];
+        EnterCriticalSection(&g_cs);
+        memcpy(tmp, g_lines, sizeof(tmp));
+        LeaveCriticalSection(&g_cs);
+        for (int i = 0; i < 8; i++) {
+            WCHAR w[120];
+            MultiByteToWideChar(CP_ACP, 0, tmp[i], -1, w, 120);
+            ExtTextOutW(hdc, 10, 10 + i * 28, 0, NULL, w, wcslen(w), NULL);
+        }
+        EndPaint(h, &ps);
+        return 0;
+    }
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProc(h, msg, wp, lp);
+}
+
+/* 探测结果 */
+static const char *g_osVerdict = "?";
+static const char *g_cpuVerdict = "?";
+static const char *g_usbVerdict = "?";
+static char g_screen[64] = "?";
+static char g_mem[64] = "?";
+static int  g_usbCount = 0;
+
+static void ProbeVersion(void) {
     OSVERSIONINFO ovi;
     memset(&ovi, 0, sizeof(ovi));
     ovi.dwOSVersionInfoSize = sizeof(ovi);
     if (GetVersionEx(&ovi)) {
-        Log("OS: Windows CE %u.%u (build %u) platform=%u",
-            ovi.dwMajorVersion, ovi.dwMinorVersion,
-            ovi.dwBuildNumber, ovi.dwPlatformId);
-        /* CE6 = 6.0x；5.x 需重新评估 API 差异；7.x(WEC7) 反而更好办 */
-        if (ovi.dwMajorVersion == 6)      Log("OS VERDICT: CE 6.0 -> OK, 按计划走");
-        else if (ovi.dwMajorVersion == 5) Log("OS VERDICT: CE 5.0 -> 注意: API 差异需评估");
-        else                              Log("OS VERDICT: %u -> 重新评估", ovi.dwMajorVersion);
-    } else {
-        Log("OS: GetVersionEx FAILED err=%u", GetLastError());
+        if (ovi.dwMajorVersion == 6)      g_osVerdict = "CE 6.0 OK";
+        else if (ovi.dwMajorVersion == 5) g_osVerdict = "CE 5.0 (needs review)";
+        else                              g_osVerdict = "UNEXPECTED";
+        char b[80];
+        _snprintf(b, 79, "OS: CE %u.%u build %u", ovi.dwMajorVersion,
+                  ovi.dwMinorVersion, ovi.dwBuildNumber);
+        SetLine(0, b);
     }
 }
 
-static void DumpCpu(void) {
+static void ProbeCpu(void) {
     SYSTEM_INFO si;
     memset(&si, 0, sizeof(si));
     GetSystemInfo(&si);
-    Log("CPU: arch=%u (5=ARM) procType=%u level=%u rev=%u numCPUs=%u pageSize=%u",
-        si.wProcessorArchitecture, si.dwProcessorType,
-        si.wProcessorLevel, si.wProcessorRevision,
-        si.dwNumberOfProcessors, si.dwPageSize);
-    /* 常见值: 2577=ARM720 2578=ARM820 2579=ARM920 2580=ARM1020(ARM10/11 系) 0x0C24? */
-    if (si.wProcessorArchitecture == 5)
-        Log("CPU VERDICT: ARM -> OK (procType 见上, 决定 ffmpeg armv4/armv6 档位)");
-    else
-        Log("CPU VERDICT: 非 ARM(=%u) -> 直连方案需重新评估!", si.wProcessorArchitecture);
+    if (si.wProcessorArchitecture == 5) g_cpuVerdict = "ARM OK";
+    else                                g_cpuVerdict = "NOT ARM (!)";
+    char b[80];
+    _snprintf(b, 79, "CPU: arch=%u type=%u level=%u",
+              si.wProcessorArchitecture, si.dwProcessorType, si.wProcessorLevel);
+    SetLine(1, b);
 }
 
-static void DumpMemory(void) {
+static void ProbeScreen(void) {
+    HDC hdc = GetDC(NULL);
+    if (hdc) {
+        int w = GetDeviceCaps(hdc, HORZRES);
+        int h = GetDeviceCaps(hdc, VERTRES);
+        int bpp = GetDeviceCaps(hdc, BITSPIXEL);
+        _snprintf(g_screen, 63, "%dx%d@%d", w, h, bpp);
+        ReleaseDC(NULL, hdc);
+    }
+    SetLine(2, "SCREEN: %s", g_screen);
+}
+
+static void ProbeMem(void) {
     MEMORYSTATUS ms;
     memset(&ms, 0, sizeof(ms));
     ms.dwLength = sizeof(ms);
     GlobalMemoryStatus(&ms);
-    Log("MEM: phys total=%uKB avail=%uKB virt total=%uKB avail=%uKB",
-        ms.dwTotalPhys / 1024, ms.dwAvailPhys / 1024,
-        ms.dwTotalVirtual / 1024, ms.dwAvailVirtual / 1024);
-    if (ms.dwAvailPhys >= 48 * 1024 * 1024)
-        Log("MEM VERDICT: 可用>=48MB -> H.264 软解内存 OK");
-    else
-        Log("MEM VERDICT: 可用<48MB -> 软解需按 %uKB 预算裁剪", ms.dwAvailPhys / 1024);
+    _snprintf(g_mem, 63, "%uMB total %uMB free",
+              ms.dwTotalPhys / (1024 * 1024),
+              ms.dwAvailPhys / (1024 * 1024));
+    SetLine(3, "MEM: %s", g_mem);
 }
 
-static void DumpScreen(void) {
-    HDC hdc = GetDC(NULL);
-    if (!hdc) { Log("SCREEN: GetDC FAILED"); return; }
-    int w = GetDeviceCaps(hdc, HORZRES);
-    int h = GetDeviceCaps(hdc, VERTRES);
-    int bpp = GetDeviceCaps(hdc, BITSPIXEL) * GetDeviceCaps(hdc, PLANES);
-    Log("SCREEN: %dx%d @ %dbpp", w, h, bpp);
-    ReleaseDC(NULL, hdc);
-    Log("SCREEN VERDICT: CarPlay canvas 按 %dx%d 请求", w, h);
-}
-
-/* OEM/平台名：CE 专属 SPI，两档值都试（不同 SDK 定义不一） */
-static void DumpOem(void) {
-    WCHAR buf[256];
-    char a[256];
-    memset(buf, 0, sizeof(buf));
-    if (SystemParametersInfo(0x0100 /*SPI_GETOEMINFO*/, 256, buf, 0)) {
-        W2A(buf, a, sizeof(a)); Log("OEMINFO: %s", a);
-    } else Log("OEMINFO: not available (err=%u)", GetLastError());
-    memset(buf, 0, sizeof(buf));
-    if (SystemParametersInfo(0x0101 /*SPI_GETPLATFORMTYPE*/, 256, buf, 0)) {
-        W2A(buf, a, sizeof(a)); Log("PLATFORMTYPE: %s", a);
-    } else Log("PLATFORMTYPE: not available (err=%u)", GetLastError());
-}
-
-static void DumpPlatformRegistry(void) {
+static void ProbeUsb(void) {
     HKEY hk;
-    char a[256];
-    /* HKLM\Platform: Name/Vendor — 车机方案商线索 */
-    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, L"Platform", 0, 0, &hk) == ERROR_SUCCESS) {
-        static const WCHAR *names[] = { L"Name", L"Vendor" };
+    g_usbCount = 0;
+    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, L"Drivers\\Active", 0, 0, &hk) != ERROR_SUCCESS) {
+        g_usbVerdict = "REG FAIL";
+        SetLine(4, "USB: Drivers\\Active open fail");
+        return;
+    }
+    for (DWORD idx = 0; idx < 200; idx++) {
+        WCHAR name[64]; DWORD size = 64;
+        if (RegEnumKeyEx(hk, idx, name, &size, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) break;
+        HKEY hk2;
+        if (RegOpenKeyEx(hk, name, 0, 0, &hk2) != ERROR_SUCCESS) continue;
+        char hit[160] = "";
+        static const WCHAR *vn[2] = { L"Name", L"Dll" };
         for (int i = 0; i < 2; i++) {
-            WCHAR buf[256]; DWORD size = sizeof(buf); DWORD type = 0;
-            if (RegQueryValueEx(hk, names[i], NULL, &type, (LPBYTE)buf, &size) == ERROR_SUCCESS) {
-                W2A(buf, a, sizeof(a)); Log("HKLM\\Platform\\%s = %s", i ? "Vendor" : "Name", a);
+            WCHAR buf[80]; DWORD sz = sizeof(buf); DWORD type;
+            if (RegQueryValueEx(hk2, vn[i], NULL, &type, (LPBYTE)buf, &sz) == ERROR_SUCCESS) {
+                char a[80]; W2A_local(buf, a, sizeof(a));
+                if (hit[0]) strcat(hit, "|");
+                strncat(hit, a, 79 - strlen(hit));
             }
         }
-        RegCloseKey(hk);
-    } else Log("HKLM\\Platform: absent");
-    /* AkuVersion: CE6 的 QFE/维护版本 */
-    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, L"Versions", 0, 0, &hk) == ERROR_SUCCESS) {
-        WCHAR buf[64]; DWORD size = sizeof(buf); DWORD type = 0;
-        if (RegQueryValueEx(hk, L"AkuVersion", NULL, &type, (LPBYTE)buf, &size) == ERROR_SUCCESS) {
-            W2A(buf, a, sizeof(a)); Log("AkuVersion: %s", a);
-        }
-        RegCloseKey(hk);
-    }
-}
-
-/* 枚举注册表子键名（宽转窄打印）。返回枚举到的个数 */
-static int EnumSubKeys(HKEY root, const WCHAR *sub, int maxKeys) {
-    HKEY hk;
-    if (RegOpenKeyEx(root, sub, 0, 0, &hk) != ERROR_SUCCESS) {
-        char asub[128]; W2A(sub, asub, sizeof(asub));
-        Log("REG: %s absent", asub);
-        return -1;
-    }
-    char a[180];
-    int count = 0;
-    for (DWORD idx = 0; idx < (DWORD)maxKeys; idx++) {
-        WCHAR name[128]; DWORD size = 128;
-        if (RegEnumKeyEx(hk, idx, name, &size, NULL, NULL, NULL, NULL) != ERROR_SUCCESS)
-            break;
-        W2A(name, a, sizeof(a));
-        Log("  [%u] %s", idx, a);
-        count++;
+        RegCloseKey(hk2);
+        if (strstr(hit, "usb") || strstr(hit, "USB") ||
+            strstr(hit, "hcd") || strstr(hit, "HCD"))
+            g_usbCount++;
     }
     RegCloseKey(hk);
-    return count;
+    if (g_usbCount >= 1) g_usbVerdict = "USB host ALIVE";
+    else                 g_usbVerdict = "no USB drv (need load)";
+    SetLine(4, "USB: %d USB-related drv loaded", g_usbCount);
 }
 
-/* USB host 生死判定：BuiltIn 里的 HCD（主机控制器驱动） + Active 里的已加载项 */
-static void DumpUsb(void) {
-    Log("--- HKLM\\Drivers\\BuiltIn (最多96项, 找 *usb*/*hcd*/*ohci*/*ehci*) ---");
-    int n = EnumSubKeys(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn", 96);
-    Log("BuiltIn total shown: %d", n);
-
-    Log("--- HKLM\\Drivers\\Active (已加载驱动, 最多64项) ---");
-    HKEY hk;
-    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, L"Drivers\\Active", 0, 0, &hk) == ERROR_SUCCESS) {
-        char a[160], adll[160];
-        int usbCount = 0;
-        for (DWORD idx = 0; idx < 64; idx++) {
-            WCHAR name[64]; DWORD size = 64;
-            if (RegEnumKeyEx(hk, idx, name, &size, NULL, NULL, NULL, NULL) != ERROR_SUCCESS)
-                break;
-            W2A(name, a, sizeof(a));
-            /* 每项里的 Dll/Name 值才是重点 */
-            HKEY hk2;
-            WCHAR dll[MAX_PATH] = L"", dev[128] = L"";
-            if (RegOpenKeyEx(hk, name, 0, 0, &hk2) == ERROR_SUCCESS) {
-                DWORD sz2 = sizeof(dll);
-                RegQueryValueEx(hk2, L"Dll", NULL, NULL, (LPBYTE)dll, &sz2);
-                sz2 = sizeof(dev);
-                RegQueryValueEx(hk2, L"Name", NULL, NULL, (LPBYTE)dev, &sz2);
-                RegCloseKey(hk2);
-            }
-            W2A(dll, adll, sizeof(adll));
-            /* 只详列 USB 相关，其余一行带过（防止日志爆炸） */
-            char alldll[300];
-            W2A(dev, a, sizeof(a));
-            _snprintf(alldll, sizeof(alldll) - 1, "%s %s", a, adll);
-            if (strstr(alldll, "usb") || strstr(alldll, "hcd") ||
-                strstr(alldll, "USB") || strstr(alldll, "HCD")) {
-                Log("  USB> [%s] dev=%s dll=%s", a, a, adll);
-                usbCount++;
-            }
-        }
-        RegCloseKey(hk);
-        Log("USB VERDICT: %d 个 USB 相关驱动已加载 (%s)",
-            usbCount, usbCount ? "USB host 存活 -> Phase 1 可行" : "未发现 -> 上车插U盘重测/驱动未加载");
-    }
-}
-
-static void DumpStorage(void) {
+static void ProbeStorage(void) {
     static const WCHAR *dirs[] = {
-        L"\\Storage Card", L"\\SDMMC", L"\\SDMEM", L"\\USB Storage",
-        L"\\USBHD", L"\\Hard Disk", L"\\SD Card", L"\\SDMemory", L"\\SDMemory2",
+        L"\\Storage Card", L"\\SDMMC", L"\\SDMEM",
+        L"\\USB Storage", L"\\USBHD", L"\\Hard Disk", L"\\SD Card"
     };
-    Log("--- 存储挂载点探测 ---");
-    for (int i = 0; i < 9; i++) {
+    char found[200] = "mounts:";
+    for (int i = 0; i < 7; i++) {
         WIN32_FIND_DATAW fd;
         HANDLE h = FindFirstFile(dirs[i], &fd);
         if (h != INVALID_HANDLE_VALUE) {
             FindClose(h);
-            char a[64]; W2A(dirs[i], a, sizeof(a));
-            Log("  MOUNT OK: %s", a);
+            char a[32]; W2A_local(dirs[i], a, sizeof(a));
+            strncat(found, " ", 199 - strlen(found));
+            strncat(found, a, 199 - strlen(found));
         }
     }
+    SetLine(5, "%s", found);
 }
 
-static void DumpDlls(void) {
-    struct { const WCHAR *dll; const char *why; } items[] = {
-        { L"\\Windows\\ddraw.dll",     "DirectDraw (Phase3 渲染)" },
-        { L"\\Windows\\ws2.dll",       "Winsock (CarPlay over IP)" },
-        { L"\\Windows\\waveapi.dll",   "WaveAPI 音频" },
-        { L"\\Windows\\uhcd.dll",      "USB UHCI host" },
-        { L"\\Windows\\ohcd.dll",      "USB OHCI host" },
-        { L"\\Windows\\ehci.dll",      "USB EHCI host(高速)" },
-        { L"\\Windows\\hcd.dll",       "USB HCD 通用" },
-        { L"\\Windows\\usbmsc.dll",    "USB mass storage" },
-        { L"\\Windows\\aygshell.dll",  "shell 集成" },
-        { L"\\Windows\\toolhelp.dll",  "进程快照" },
-        { L"\\Windows\\nk.bin",        "内核镜像(binfs)" },
-    };
-    Log("--- 关键文件存在性 ---");
-    for (int i = 0; i < 11; i++) {
-        DWORD attr = GetFileAttributes(items[i].dll);
-        char a[64]; W2A(items[i].dll, a, sizeof(a));
-        Log("  %s %-20s : %s", (attr != INVALID_FILE_ATTRIBUTES) ? "OK" : "--",
-            a, items[i].why);
-    }
-    /* nk.bin 大小（存在时）= 内核规模线索 */
-    HANDLE h = CreateFile(L"\\Windows\\nk.bin", GENERIC_READ, FILE_SHARE_READ,
-                          NULL, OPEN_EXISTING, 0, NULL);
-    if (h != INVALID_HANDLE_VALUE) {
-        Log("  nk.bin size = %u KB", GetFileSize(h, NULL) / 1024);
-        CloseHandle(h);
-    }
-}
-
-static void DumpProcesses(void) {
-    Log("--- 运行进程（找原车 launcher/导航进程名） ---");
-    /* CE 的 CreateToolhelp32Snapshot 在 toolhelp 里；若 DLL 缺失则优雅跳过 */
+static void ProbeProcList(void) {
+    HMODULE hMod = GetModuleHandle(L"toolhelp.dll");
+    if (!hMod) hMod = LoadLibrary(L"toolhelp.dll");
+    if (!hMod) { SetLine(6, "PROC: toolhelp missing"); return; }
     typedef HANDLE (*PFN_SNAP)(DWORD, DWORD);
     typedef BOOL (*PFN_FIRST)(HANDLE, void *);
     typedef BOOL (*PFN_NEXT)(HANDLE, void *);
-    HMODULE hMod = GetModuleHandle(L"toolhelp.dll");
-    if (!hMod) hMod = LoadLibrary(L"toolhelp.dll");
-    if (!hMod) { Log("  toolhelp 不可用，跳过进程列表"); return; }
     PFN_SNAP  snap  = (PFN_SNAP)GetProcAddress(hMod, L"CreateToolhelp32Snapshot");
     PFN_FIRST first = (PFN_FIRST)GetProcAddress(hMod, L"Process32First");
     PFN_NEXT  next  = (PFN_NEXT)GetProcAddress(hMod, L"Process32Next");
-    if (!snap || !first || !next) { Log("  toolhelp API 不全，跳过"); return; }
+    if (!snap || !first || !next) { SetLine(6, "PROC: api missing"); return; }
 
 #pragma pack(push,1)
     struct PROCENTRY {
-        DWORD dwSize;
-        DWORD cntUsage;
-        DWORD th32ProcessID;
-        DWORD th32DefaultHeapID;
-        DWORD th32ModuleID;
-        DWORD cntThreads;
-        DWORD th32ParentProcessID;
-        LONG  pcPriClassBase;
-        DWORD dwFlags;
+        DWORD dwSize, cntUsage, th32ProcessID, th32DefaultHeapID, th32ModuleID,
+               cntThreads, th32ParentProcessID;
+        LONG  pcPriClassBase; DWORD dwFlags;
         WCHAR szExeFile[MAX_PATH];
     } pe;
 #pragma pack(pop)
 
-    HANDLE hSnap = snap(0x00000002 /*TH32CS_SNAPPROCESS*/, 0);
-    if (hSnap == INVALID_HANDLE_VALUE) { Log("  snapshot 失败"); return; }
+    HANDLE hSnap = snap(0x00000002, 0);
+    if (hSnap == INVALID_HANDLE_VALUE) { SetLine(6, "PROC: snap fail"); return; }
     memset(&pe, 0, sizeof(pe)); pe.dwSize = sizeof(pe);
-    char a[64];
+    int n = 0; char list[100] = "procs:";
     if (first(hSnap, &pe)) {
         do {
-            W2A(pe.szExeFile, a, sizeof(a));
-            Log("  pid=%-8u ppid=%-8u %s", pe.th32ProcessID, pe.th32ParentProcessID, a);
+            char a[32]; W2A_local(pe.szExeFile, a, sizeof(a));
+            strncat(list, " ", 99 - strlen(list));
+            strncat(list, a, 99 - strlen(list));
+            n++;
+            if (n >= 6) { strncat(list, "...", 99 - strlen(list)); break; }
             memset(&pe, 0, sizeof(pe)); pe.dwSize = sizeof(pe);
         } while (next(hSnap, &pe));
     }
     CloseHandle(hSnap);
+    SetLine(6, "%s", list);
 }
 
-/* ---------------- 入口 ---------------- */
+static void ProbeBuiltInUsb(void) {
+    HKEY hk;
+    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn", 0, 0, &hk) != ERROR_SUCCESS) {
+        SetLine(7, "BuiltIn: absent"); return;
+    }
+    char found[200] = "USB built-in:";
+    for (DWORD idx = 0; idx < 200; idx++) {
+        WCHAR name[80]; DWORD size = 80;
+        if (RegEnumKeyEx(hk, idx, name, &size, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) break;
+        char a[80]; W2A_local(name, a, sizeof(a));
+        if (strstr(a, "USB") || strstr(a, "usb") || strstr(a, "HCD") || strstr(a, "hcd")) {
+            strncat(found, " ", 199 - strlen(found));
+            strncat(found, a, 199 - strlen(found));
+        }
+    }
+    RegCloseKey(hk);
+    SetLine(7, "%s", found);
+}
 
-int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmdLine, int nShow) {
-    (void)hInst; (void)hPrev; (void)lpCmdLine; (void)nShow;
+static DWORD WINAPI ProbeThread(LPVOID arg) {
+    (void)arg;
+    Sleep(500);
+    ProbeVersion();
+    ProbeCpu();
+    ProbeScreen();
+    ProbeMem();
+    ProbeUsb();
+    ProbeStorage();
+    ProbeProcList();
+    ProbeBuiltInUsb();
+    SetLine(0, "[OS]   %s", g_osVerdict);
+    SetLine(1, "[CPU]  %s", g_cpuVerdict);
+    SetLine(2, "[USB]  %s", g_usbVerdict);
+    SetLine(3, "SCREEN %s  MEM %s", g_screen, g_mem);
+    SetLine(7, "TAP SCREEN TO EXIT (no file written)");
+    return 0;
+}
 
-    LogInit();
-    Log("==== tang-carplay probe v0.1 ====");
-    Log("exe: (见日志同目录) tick=%u", GetTickCount());
+int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmd, int nShow) {
+    (void)hPrev; (void)cmd;
+    WNDCLASSW wc;
+    memset(&wc, 0, sizeof(wc));
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInst;
+    wc.lpszClassName = WC_PROBE;
+    RegisterClassW(&wc);
 
-    DumpVersion();
-    DumpCpu();
-    DumpMemory();
-    DumpScreen();
-    DumpOem();
-    DumpPlatformRegistry();
-    DumpStorage();
-    DumpDlls();
-    DumpUsb();
-    DumpProcesses();
+    int sw = GetSystemMetrics(SM_CXSCREEN);
+    int sh = GetSystemMetrics(SM_CYSCREEN);
 
-    Log("==== probe done, 共 %u ms ====", GetTickCount() - g_startTick);
-    if (g_hLog != INVALID_HANDLE_VALUE) CloseHandle(g_hLog);
+    InitializeCriticalSection(&g_cs);
+    SetLine(0, "probe v0.2 (no-write) starting...");
+    SetLine(1, "tapping screen will exit");
 
-    /* 弹窗给结论（ASCII，避免编码坑）；完整数据看 probe_log.txt */
-    MessageBox(NULL,
-        L"probe done.\r\n"
-        L"See probe_log.txt (same folder as exe).\r\n"
-        L"Key lines: 'OS VERDICT' / 'CPU VERDICT' / 'USB VERDICT'.",
-        L"tang-carplay probe", MB_OK | MB_ICONINFORMATION);
+    g_hwnd = CreateWindowW(WC_PROBE, L"probe v0.2",
+        WS_VISIBLE | WS_CAPTION,
+        0, 0, sw, sh, NULL, NULL, hInst, NULL);
+    ShowWindow(g_hwnd, SW_SHOW);
+    UpdateWindow(g_hwnd);
+
+    HANDLE th = CreateThread(NULL, 256 * 1024, ProbeThread, NULL,
+                             STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+
+    MSG msg;
+    while (GetMessage(&msg, NULL, 0, 0) > 0) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+    if (th) { WaitForSingleObject(th, 30000); CloseHandle(th); }
+    /* 关键：此处无 FlushFileBuffers、无 CreateFile、无任何磁盘写入 */
     return 0;
 }
