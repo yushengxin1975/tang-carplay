@@ -16,11 +16,13 @@
 - [ ] 确认：CE 版本 = 6.0、CPU = ARMv4I/ARMv6、分辨率、内存、USB host 驱动、存储卡挂载点
 - **判定：任一项不符 → 记录并评估影响；USB host 不可用 → 项目终止，转盒子/换屏方案**
 
-### Phase 1 — WinCE USB host ↔ iPhone 通信
-- [ ] 研究 CE6 USBD 客户端驱动模型（Stream Interface Driver, USB Client Driver）
-- [ ] 编写 USB 客户端驱动：枚举 Apple 设备（VID 0x05AC）、绑定厂商接口、读写 bulk 端点
-- [ ] 实现 usbmux 帧层（参考 libimobiledevice/usbmuxd 协议）暴露为 "MTP:" 样式的流设备
-- 参考：carlive（CE6 下收发+渲染骨架）、亿连 WinCE 端的 USB 通信 DLL 逆向
+### Phase 1 — WinCE USB host ↔ iPhone 通信（已大幅降级）
+- [x] 找到 VNC Automotive CEUSBKWrapper（LGPL, GitHub 已克隆）—— AutoKit 发行包里的 `CEUSBBOX.dll` = `ceusbkwrapperdrv.dll`（USBD 客户端内核驱动），`ceusbkwrapper.dll` = Ukw 用户库，**已在你车上验证过**
+- [x] 注册表机制：`HKLM\Drivers\USB\ClientDrivers\Usb_Kernel_Wrapper` + `LoadClients\<VID>\Default\Default\Usb_Kernel_Wrapper`
+- [ ] 上车实测（`usbtest.exe`）：装两条 VID 绑定（Apple 0x05AC=1452 + Magic 1314），跑 UkwOpenDriver → 枚举 → 控制传输 → claim
+- [ ] iAP2 / CarPlay 协议栈移植（**仅在 Phase 1 通过后开展**）
+
+> 参考：第三方 CEUSBKWrapper（用户态 libusb-win32 风格）+ maaiika/Carplay 泄露 SDK + xcertplay 协议层
 
 ### Phase 2 — iAP2 / CarPlay 协议栈移植（C++）
 - [ ] PC 上先用 xcertplay + Python(wiomoc/iap2) 抓完整握手流程存档

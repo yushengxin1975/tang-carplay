@@ -7,7 +7,7 @@ on:
 
 jobs:
   wince-build:
-    name: Build probe.exe (CeGCC arm-mingw32ce)
+          name: Build WinCE ARM binaries (probe/usbwatch/bench/usbtest)
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/enlyze/windows-ce-build-environment-arm
@@ -27,3 +27,4 @@ jobs:
             probe/probe.exe
             usbwatch/usbwatch.exe
             bench/bench.exe
+            usbtest/usbtest.exe
