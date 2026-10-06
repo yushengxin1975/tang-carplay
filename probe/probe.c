@@ -167,6 +167,7 @@ static void ProbeUsb(void) {
 }
 
 static void ProbeStorage(void) {
+    /* 先查已知 7 个常见挂载名 */
     static const WCHAR *dirs[] = {
         L"\\Storage Card", L"\\SDMMC", L"\\SDMEM",
         L"\\USB Storage", L"\\USBHD", L"\\Hard Disk", L"\\SD Card"
@@ -182,7 +183,24 @@ static void ProbeStorage(void) {
             strncat(found, a, 199 - strlen(found));
         }
     }
-    SetLine(5, "%s", found);
+    /* 然后扫 "\" 根目录下的所有子目录，找我们漏掉的挂载名 */
+    char root[200] = "|scan:";
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFile(L"\\*", &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                char a[40]; W2A_local(fd.cFileName, a, sizeof(a));
+                if (a[0] != '.' && a[0] != 0) {
+                    strncat(root, " ", 199 - strlen(root));
+                    strncat(root, "\\", 199 - strlen(root));
+                    strncat(root, a, 199 - strlen(root));
+                }
+            }
+        } while (FindNextFile(h, &fd));
+        FindClose(h);
+    }
+    SetLine(5, "%s%s", found, root);
 }
 
 static void ProbeProcList(void) {
