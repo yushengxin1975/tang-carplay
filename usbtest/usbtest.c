@@ -282,20 +282,27 @@ static DWORD WINAPI TestThread(LPVOID arg) {
         L"Dll", drvPath);
     PushEvent("B: registry written (Dll=%s r1=%d)", winOk ? "Good" : "SD", r1);
 
-    /* C. ActivateDeviceEx 强制 USBD 加载驱动（关键步骤，v0.2 缺这个导致 err=87） */
+    /* C. ActivateDeviceEx 强制 USBD 加载驱动（关键步骤，v0.2 缺这个导致 err=87）
+     * 注意：如果车机刚重启过（USBD boot-time 已扫 ClientDrivers），驱动已加载，
+     * ActivateDeviceEx 会返回 err=2 (ERROR_FILE_NOT_FOUND)，此时跳过即可——驱动已在
+     */
     SetLine(0, "C: ActivateDeviceEx");
     {
         HANDLE h = ActivateDeviceEx(L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", NULL, 0, 0);
         DWORD e = GetLastError();
         if (h == NULL || h == INVALID_HANDLE_VALUE) {
-            PushEvent("C: ActivateDeviceEx FAIL err=%u", e);
+            if (e == 2) {
+                PushEvent("C: ActivateEx err=2 (驱动可能已激活/重启后无需激活)");
+            } else {
+                PushEvent("C: ActivateEx FAIL err=%u", e);
+            }
         } else {
             PushEvent("h = 0x%08X ok", (DWORD)h);
-            CloseHandle(h);  /* 释放句柄——驱动仍在 USBD 中加载 */
+            CloseHandle(h);
             PushEvent("C: ActivateDeviceEx OK");
         }
     }
-    Sleep(500);  /* 给 USBD 一点时间完成驱动初始化 */
+    Sleep(500);
 
     /* D. 加载用户库（卡上只读加载） */
     HMODULE hLib = NULL;
