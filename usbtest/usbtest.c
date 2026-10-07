@@ -161,16 +161,21 @@ static void ExeDir(WCHAR *dir, DWORD cap) {
 
 static BOOL WriteRegStr(HKEY r, const WCHAR *sub, const WCHAR *val, const WCHAR *data) {
     HKEY hk;
-    if (RegCreateKeyExW(r, sub, 0, NULL, 0, 0, NULL, &hk, NULL) != ERROR_SUCCESS) return FALSE;
-    LONG rc = RegSetValueExW(hk, val, 0, REG_SZ, (const BYTE *)data,
-                              (DWORD)(wcslen(data) + 1) * sizeof(WCHAR));
+    /* REG_OPTION_NON_VOLATILE: write to persistent hive (not RAM volatile) */
+    DWORD disp;
+    LONG rc = RegCreateKeyExW(r, sub, 0, NULL, REG_OPTION_NON_VOLATILE, 0, NULL, &hk, &disp);
+    if (rc != ERROR_SUCCESS) return FALSE;
+    rc = RegSetValueExW(hk, val, 0, REG_SZ, (const BYTE *)data,
+                        (DWORD)(wcslen(data) + 1) * sizeof(WCHAR));
     RegCloseKey(hk);
     return rc == ERROR_SUCCESS;
 }
 static BOOL WriteRegDword(HKEY r, const WCHAR *sub, const WCHAR *val, DWORD data) {
     HKEY hk;
-    if (RegCreateKeyExW(r, sub, 0, NULL, 0, 0, NULL, &hk, NULL) != ERROR_SUCCESS) return FALSE;
-    LONG rc = RegSetValueExW(hk, val, 0, REG_DWORD, (const BYTE *)&data, sizeof(data));
+    DWORD disp;
+    LONG rc = RegCreateKeyExW(r, sub, 0, NULL, REG_OPTION_NON_VOLATILE, 0, NULL, &hk, &disp);
+    if (rc != ERROR_SUCCESS) return FALSE;
+    rc = RegSetValueExW(hk, val, 0, REG_DWORD, (const BYTE *)&data, sizeof(data));
     RegCloseKey(hk);
     return rc == ERROR_SUCCESS;
 }
@@ -281,6 +286,28 @@ static DWORD WINAPI TestThread(LPVOID arg) {
         L"Drivers\\USB\\LoadClients\\4884\\Default\\Default\\Usb_Kernel_Wrapper",
         L"Dll", drvPath);
     PushEvent("B: registry written (Dll=%s r1=%d)", winOk ? "Good" : "SD", r1);
+
+    /* B.5 verify: ensure hive readable */
+    {
+        HKEY hkV;
+        WCHAR LWIN[64]; DWORD sz = sizeof(LWIN); DWORD type;
+        LONG rcs = RegCreateKeyExW(HKEY_LOCAL_MACHINE,
+            L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", 0, NULL,
+            REG_OPTION_NON_VOLATILE, 0, NULL, &hkV, NULL);
+        if (rcs == ERROR_SUCCESS) {
+            sz = sizeof(LWIN);
+            LONG rqv = RegQueryValueExW(hkV, L"Dll", NULL, &type, (LPBYTE)LWIN, &sz);
+            if (rqv == ERROR_SUCCESS) {
+                char a[80]; W2A_local(LWIN, a, sizeof(a));
+                PushEvent("B5 verify: Dll=%s (len=%u)", a, sz);
+            } else {
+                PushEvent("B5 verify: FAIL err=%u", rqv);
+            }
+            RegCloseKey(hkV);
+        } else {
+            PushEvent("B5 verify: open FAIL err=%u", rcs);
+        }
+    }
 
     /* C. ActivateDeviceEx 强制 USBD 加载驱动（关键步骤，v0.2 缺这个导致 err=87）
      * 注意：如果车机刚重启过（USBD boot-time 已扫 ClientDrivers），驱动已加载，
