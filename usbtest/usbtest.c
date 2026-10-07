@@ -246,7 +246,7 @@ static DWORD WINAPI TestThread(LPVOID arg) {
     /* A. 部署 DLL：拷到 \Windows\USBKIT.DLL（不覆盖 AutoKit 原 CEUSBBOX.dll） */
     SetLine(0, "A: deploy USBKIT.DLL");
     WCHAR srcKrnl[MAX_PATH];
-    _snwprintf(srcKrnl, MAX_PATH - 1, L"%s\USBKIT.DLL", dir);
+    _snwprintf(srcKrnl, MAX_PATH - 1, L"%s\\USBKIT.DLL", dir);
     BOOL winOk = FALSE;
     if (CopyFile(srcKrnl, L"\\Windows\\USBKIT.DLL", FALSE)) {
         winOk = TRUE;
@@ -300,8 +300,8 @@ static DWORD WINAPI TestThread(LPVOID arg) {
     /* D. 加载用户库（卡上只读加载） */
     HMODULE hLib = NULL;
     {
-        WCHAR src1[MAX_PATH];
-        _snwprintf(src1, MAX_PATH - 1, L"%s\ceusbkwrapper.dll", dir);
+WCHAR src1[MAX_PATH];
+    _snwprintf(src1, MAX_PATH - 1, L"%s\\ceusbkwrapper.dll", dir);
         hLib = LoadLibraryW(src1);
         if (!hLib) hLib = LoadLibraryW(L"ceusbkwrapper.dll");
         if (!hLib) {
