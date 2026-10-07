@@ -7,50 +7,50 @@ on:
 
 jobs:
   test-pc:
-    runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            cxx: g++
+            cxxpkg: g++
+            cxxinstall: sudo apt-get update && sudo apt-get install -y g++
+          - os: windows-latest
+            cxx: g++.exe
+            cxxpkg: mingw-w64
+            cxxinstall: choco install mingw -y
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install MinGW
-        shell: powershell
-        run: |
-          winget install --id=MartinStorsjo.LLVM-MinGW.UCRT --accept-package-agreements --accept-source-agreements --silent
-
+      - name: Install g++
+        shell: bash
+        run: ${{ matrix.cxxinstall }}
       - name: Build and test
-        shell: powershell
+        shell: bash
         run: |
-          $gpp = $null
-          $candidates = @(
-            'C:\Program Files\LLVM-MinGW\bin\g++.exe',
-            'C:\Program Files (x86)\LLVM-MinGW\bin\g++.exe',
-            'C:\mingw64\bin\g++.exe',
-            'C:\msys64\mingw64\bin\g++.exe',
-            'C:\msys64\ucrt64\bin\g++.exe'
-          )
-          foreach ($c in $candidates) { if (Test-Path $c) { $gpp = $c; break } }
-          if (-not $gpp) {
-            # Recursive fallback (limited depth)
-            $gpp = (Get-ChildItem 'C:\Program Files','C:\Program Files (x86)' -Recurse -Depth 6 -Filter 'g++.exe' -ErrorAction SilentlyContinue -ErrorAction Stop 2>&1 | Select-Object -First 1 -ErrorAction SilentlyContinue).FullName
-          }
-          if (-not $gpp) { Write-Error "g++ not found"; exit 1 }
-          Write-Host "g++: $gpp"
-          $env:PATH = (Split-Path $gpp) + ';' + $env:PATH
-          $args = '-std=c++17 -O2 -g -Wall -Iclient/include -Iclient/cpp client/cpp/protocol/aes_sbox_data.cpp client/cpp/protocol/connection.cpp client/test/test_protocol.cpp -o build/test.exe'
-          $cmd = ('"' + $gpp + '" ' + $args)
-          Write-Host "cmd: $cmd"
-          cmd.exe /c $cmd
-          if (Test-Path build/test.exe) { Write-Host "BUILD OK $([math]::Round((Get-Item build/test.exe).Length/1KB,1)) KB" }
-          else { Write-Error "BUILD FAIL"; exit 1 }
-          ./build/test.exe | Tee-Object -FilePath test.log
-
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            CXX="C:/ProgramData/chocolatey/bin/g++.exe"
+            [ -f "$CXX" ] || CXX="C:/ProgramData/chocolatey/lib/mingw/tools/install/bin/g++.exe"
+            [ -f "$CXX" ] || CXX="C:/mingw64/bin/g++.exe"
+            [ -f "$CXX" ] || CXX="C:/msys64/mingw64/bin/g++.exe"
+          else
+            CXX="g++"
+          fi
+          echo "Using compiler: $CXX"
+          mkdir -p build
+          "$CXX" -std=c++17 -O2 -g -Wall \
+            -Iclient/include -Iclient/cpp \
+            client/cpp/protocol/aes_sbox_data.cpp \
+            client/cpp/protocol/connection.cpp \
+            client/test/test_protocol.cpp \
+            -o build/test.exe
+          ls -la build/
+          ./build/test.exe | tee test.log
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pc-unit-test
+          name: pc-test-${{ matrix.os }}-${{ github.run_id }}
           path: |
             build/test.exe
             test.log
