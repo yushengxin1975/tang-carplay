@@ -1,20 +1,21 @@
-/* usbtest.c — 唐2015 WinCE USB 栈验证器 v0.3 (零写卡 + ActivateDeviceEx)
+/* usbtest.c — 唐2015 WinCE USB 栈验证器 v0.6 (BuiltIn 注册路径)
  *
- * v0.2 → v0.3 变化（修复 v0.2 实测 err=87 UkwOpenDriver 失败）：
- *   1. CEUSBBOX.dll → \Windows\USBKIT.DLL（新文件名，避免覆盖 AutoKit 自己的 \Windows\CEUSBBOX.dll）
- *   2. 注册表 ClientDrivers\Usb_Kernel_Wrapper.Dll = USBKIT.DLL（bare 名走 \Windows 搜索路径）
- *   3. 加 ActivateDeviceEx() 调用强制 USBD 加载驱动——这是 WinCE 客户端驱动注册的标准两步：
- *      写 ClientDrivers 注册表（声明驱动）→ ActivateDeviceEx 注册（实例化驱动）
- *      没有这一步，UkwOpenDriver 内部 CreateFile("UKW1:") 找不到驱动返回 err=87
- *   4. 错误信息更详细（错误码 + 路径）
+ * v0.5 → v0.6 关键变化（修复 v0.3/v0.4/v0.5 E 步骤 err=87）：
+ *   - 把 USB 客户端驱动注册路径从 Drivers\USB\ClientDrivers 改为 Drivers\BuiltIn
+ *     CE 启动时 Device Manager 强制扫描 BuiltIn 路径加载所有 Active 设备
+ *     （USB client drivers 通过 BuiltIn 加载后 USBD 一定能找到 `UKW1:`）
+ *   - 同时保留 Drivers\USB\ClientDrivers 路径（万一某种 BuiltIn 不被 USB 注册）
+ *   - 注册表 BuiltIn 用最佳实践：Flags=16 (DMFLAGS_IODEVICE|DEVFLAGS_LOAD_ASYNCHRONOUS)
+ *   - DLL 路径：用 `\\Windows\\USBKIT.DLL`（persistent）
+ *   - ActivateDeviceEx 失败 err=2 时不再当致命错——很可能驱动已经由 BuiltIn 加载
  *
- * 验证项（屏幕 ring buffer）：
- *   A: deploy DLL    → push A 事件 + 屏幕行 0
- *   B: registry     → push B 事件 + 屏幕行 0
- *   C: ActivateDev   → push DEVICE EVENT → 如果设备事件触发 → 内核驱动真的活了
- *   D: load ukw lib  → push D
- *   E: UkwOpenDriver → 屏幕行 1 UKW STACK OK/FAIL
- *   F: poll + enum iPhone → 屏幕行 2-3 ENUM/XFER/CLAIM verdicts
+ * 验证流程（v0.6）：
+ *   A: copy USBKIT.DLL to \Windows
+ *   B: write registry — Dual-path (Drivers\USB\ClientDrivers\ + Drivers\BuiltIn\)
+ *   C: ActivateDeviceEx (USB client drivers path - expected err=2 if BuiltIn loaded it)
+ *   D: load ukw lib from SD card
+ *   E: UkwOpenDriver (should succeed now - either via ActivateEx or BuiltIn)
+ *   F: poll + enum iPhone
  */
 
 #include <windows.h>
@@ -69,7 +70,7 @@ static PFN_Release     pReleaseIface;
 static PFN_CtrlXfer    pCtrlXfer;
 static PFN_Close       pClose;
 
-/* ---------------- GUI：顶部 4 行 + 滚动事件区 ---------------- */
+/* ---------------- GUI ---------------- */
 static HWND g_hwnd = NULL;
 static volatile BOOL g_running = TRUE;
 static volatile BOOL g_done = FALSE;
@@ -159,9 +160,8 @@ static void ExeDir(WCHAR *dir, DWORD cap) {
     } else wcsncpy(dir, L".", cap - 1);
 }
 
-static BOOL WriteRegStr(HKEY r, const WCHAR *sub, const WCHAR *val, const WCHAR *data) {
+static BOOL WriteRegStrFull(HKEY r, const WCHAR *sub, const WCHAR *val, const WCHAR *data) {
     HKEY hk;
-    /* REG_OPTION_NON_VOLATILE: write to persistent hive (not RAM volatile) */
     DWORD disp;
     LONG rc = RegCreateKeyExW(r, sub, 0, NULL, REG_OPTION_NON_VOLATILE, 0, NULL, &hk, &disp);
     if (rc != ERROR_SUCCESS) return FALSE;
@@ -170,7 +170,7 @@ static BOOL WriteRegStr(HKEY r, const WCHAR *sub, const WCHAR *val, const WCHAR 
     RegCloseKey(hk);
     return rc == ERROR_SUCCESS;
 }
-static BOOL WriteRegDword(HKEY r, const WCHAR *sub, const WCHAR *val, DWORD data) {
+static BOOL WriteRegDwordFull(HKEY r, const WCHAR *sub, const WCHAR *val, DWORD data) {
     HKEY hk;
     DWORD disp;
     LONG rc = RegCreateKeyExW(r, sub, 0, NULL, REG_OPTION_NON_VOLATILE, 0, NULL, &hk, &disp);
@@ -246,9 +246,9 @@ static DWORD WINAPI TestThread(LPVOID arg) {
     (void)arg;
     WCHAR dir[MAX_PATH];
     ExeDir(dir, MAX_PATH);
-    PushEvent("=== usbtest v0.3 (activate+USBKIT) start ===");
+    PushEvent("=== usbtest v0.6 (BuiltIn path) start ===");
 
-    /* A. 部署 DLL：拷到 \Windows\USBKIT.DLL（不覆盖 AutoKit 原 CEUSBBOX.dll） */
+    /* A. 部署 DLL：拷到 \Windows\USBKIT.DLL（persistent 路径） */
     SetLine(0, "A: deploy USBKIT.DLL");
     WCHAR srcKrnl[MAX_PATH];
     _snwprintf(srcKrnl, MAX_PATH - 1, L"%s\\USBKIT.DLL", dir);
@@ -258,48 +258,60 @@ static DWORD WINAPI TestThread(LPVOID arg) {
         PushEvent("A: copy USBKIT.DLL -> \\Windows OK");
     } else {
         DWORD e = GetLastError();
-        PushEvent("A: \\Windows copy fail err=%u (using SD path)", e);
+        PushEvent("A: \\Windows copy FAIL err=%u (using SD path)", e);
     }
-
-    /* B. 注册表：UKW 前缀 + USBKIT.DLL bare 名（WinCopy 时走 \Windows 搜索） */
-    SetLine(0, "B: registry");
     const WCHAR *drvPath = winOk ? L"USBKIT.DLL" : srcKrnl;
-    BOOL r1 = WriteRegStr(HKEY_LOCAL_MACHINE,
+
+    /* B. 注册表：双路径同时写——BuiltIn（强制启动加载） + ClientDrivers（USBD 绑定） */
+    SetLine(0, "B: registry dual-path");
+    /* Path 1: Drivers\USB\ClientDrivers\Usb_Kernel_Wrapper (USBD 客户端驱动注册) */
+    WriteRegStrFull(HKEY_LOCAL_MACHINE,
         L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", L"Prefix", L"UKW");
-    WriteRegStr(HKEY_LOCAL_MACHINE,
+    WriteRegStrFull(HKEY_LOCAL_MACHINE,
         L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", L"Dll", drvPath);
-    WriteRegDword(HKEY_LOCAL_MACHINE,
+    WriteRegDwordFull(HKEY_LOCAL_MACHINE,
         L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", L"Flags", 8);
-    WriteRegStr(HKEY_LOCAL_MACHINE,
+    WriteRegStrFull(HKEY_LOCAL_MACHINE,
         L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper",
         L"InterfaceFilter_MASS_STORAGE", L"8:*:*");
-    WriteRegStr(HKEY_LOCAL_MACHINE,
+    WriteRegStrFull(HKEY_LOCAL_MACHINE,
         L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper",
         L"InterfaceFilter_RNDIS_STANDARD", L"2:2:255:!1057");
-    WriteRegStr(HKEY_LOCAL_MACHINE,
+    WriteRegStrFull(HKEY_LOCAL_MACHINE,
         L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper",
         L"InterfaceFilter_CDC_NCM", L"2:13:*");
-    WriteRegStr(HKEY_LOCAL_MACHINE,
+    WriteRegStrFull(HKEY_LOCAL_MACHINE,
         L"Drivers\\USB\\LoadClients\\1452\\Default\\Default\\Usb_Kernel_Wrapper",
         L"Dll", drvPath);
-    WriteRegStr(HKEY_LOCAL_MACHINE,
+    WriteRegStrFull(HKEY_LOCAL_MACHINE,
         L"Drivers\\USB\\LoadClients\\4884\\Default\\Default\\Usb_Kernel_Wrapper",
         L"Dll", drvPath);
-    PushEvent("B: registry written (Dll=%s r1=%d)", winOk ? "Good" : "SD", r1);
+    /* Path 2: Drivers\BuiltIn\Usb_Kernel_Wrapper (CE 启动时 DM 强制扫描——保证激活) */
+    WriteRegStrFull(HKEY_LOCAL_MACHINE,
+        L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", L"Dll", drvPath);
+    WriteRegStrFull(HKEY_LOCAL_MACHINE,
+        L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", L"Prefix", L"UKW");
+    WriteRegDwordFull(HKEY_LOCAL_MACHINE,
+        L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", L"Flags", 16); /* DEVFLAGS_LOAD_ASYNCHRONOUS */
+    WriteRegStrFull(HKEY_LOCAL_MACHINE,
+        L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", L"Index", L"1");
+    WriteRegStrFull(HKEY_LOCAL_MACHINE,
+        L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", L"Order", L"0");
+    PushEvent("B: dual-path written (USB-CL + BuiltIn)");
 
-    /* B.5 verify: ensure hive readable */
+    /* B.5 verify BuiltIn entry */
     {
         HKEY hkV;
         WCHAR LWIN[64]; DWORD sz = sizeof(LWIN); DWORD type;
         LONG rcs = RegCreateKeyExW(HKEY_LOCAL_MACHINE,
-            L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", 0, NULL,
+            L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", 0, NULL,
             REG_OPTION_NON_VOLATILE, 0, NULL, &hkV, NULL);
         if (rcs == ERROR_SUCCESS) {
             sz = sizeof(LWIN);
             LONG rqv = RegQueryValueExW(hkV, L"Dll", NULL, &type, (LPBYTE)LWIN, &sz);
             if (rqv == ERROR_SUCCESS) {
                 char a[80]; W2A_local(LWIN, a, sizeof(a));
-                PushEvent("B5 verify: Dll=%s (len=%u)", a, sz);
+                PushEvent("B5 verify BuiltIn: Dll=%s (len=%u)", a, sz);
             } else {
                 PushEvent("B5 verify: FAIL err=%u", rqv);
             }
@@ -309,24 +321,27 @@ static DWORD WINAPI TestThread(LPVOID arg) {
         }
     }
 
-    /* C. ActivateDeviceEx 强制 USBD 加载驱动（关键步骤，v0.2 缺这个导致 err=87）
-     * 注意：如果车机刚重启过（USBD boot-time 已扫 ClientDrivers），驱动已加载，
-     * ActivateDeviceEx 会返回 err=2 (ERROR_FILE_NOT_FOUND)，此时跳过即可——驱动已在
-     */
+    /* C. ActivateDeviceEx 两条路径都试 */
     SetLine(0, "C: ActivateDeviceEx");
     {
-        HANDLE h = ActivateDeviceEx(L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", NULL, 0, 0);
-        DWORD e = GetLastError();
-        if (h == NULL || h == INVALID_HANDLE_VALUE) {
-            if (e == 2) {
-                PushEvent("C: ActivateEx err=2 (驱动可能已激活/重启后无需激活)");
-            } else {
-                PushEvent("C: ActivateEx FAIL err=%u", e);
-            }
+        HANDLE h1 = ActivateDeviceEx(L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", NULL, 0, 0);
+        DWORD e1 = GetLastError();
+        if (h1 == NULL || h1 == INVALID_HANDLE_VALUE) {
+            if (e1 == 2)
+                PushEvent("C1: USB-CL ActivateEx err=2 (OK if BuiltIn loaded)");
+            else
+                PushEvent("C1: USB-CL ActivateEx FAIL err=%u", e1);
         } else {
-            PushEvent("h = 0x%08X ok", (DWORD)h);
-            CloseHandle(h);
-            PushEvent("C: ActivateDeviceEx OK");
+            CloseHandle(h1);
+            PushEvent("C1: USB-CL ActivateEx OK");
+        }
+        HANDLE h2 = ActivateDeviceEx(L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", NULL, 0, 0);
+        DWORD e2 = GetLastError();
+        if (h2 == NULL || h2 == INVALID_HANDLE_VALUE) {
+            PushEvent("C2: BuiltIn ActivateEx err=%u (built-in usually loaded at boot)", e2);
+        } else {
+            CloseHandle(h2);
+            PushEvent("C2: BuiltIn ActivateEx OK (driver activated now)");
         }
     }
     Sleep(500);
@@ -334,8 +349,8 @@ static DWORD WINAPI TestThread(LPVOID arg) {
     /* D. 加载用户库（卡上只读加载） */
     HMODULE hLib = NULL;
     {
-WCHAR src1[MAX_PATH];
-    _snwprintf(src1, MAX_PATH - 1, L"%s\\ceusbkwrapper.dll", dir);
+        WCHAR src1[MAX_PATH];
+        _snwprintf(src1, MAX_PATH - 1, L"%s\\ceusbkwrapper.dll", dir);
         hLib = LoadLibraryW(src1);
         if (!hLib) hLib = LoadLibraryW(L"ceusbkwrapper.dll");
         if (!hLib) {
@@ -360,7 +375,7 @@ WCHAR src1[MAX_PATH];
         goto finish;
     }
 
-    /* E. UkwOpenDriver（v0.2 失败的步骤，现在 ActivateDeviceEx 之后） */
+    /* E. UkwOpenDriver */
     HANDLE hDrv = pOpen();
     DWORD oe = GetLastError();
     if (!hDrv || hDrv == INVALID_HANDLE_VALUE) {
@@ -371,7 +386,7 @@ WCHAR src1[MAX_PATH];
     PushEvent("E: UkwOpenDriver OK h=0x%08X", (DWORD)hDrv);
     SetLine(1, "E: UKW STACK OK");
 
-    /* F. 轮询 + 枚举 iPhone */
+    /* F. 轮询 */
     SetLine(2, "F: PLUG IPHONE NOW");
     BOOL sawApple = FALSE, ctrlOK = FALSE, claimOK = FALSE;
     UKW_DEVICE seen[16];
@@ -446,11 +461,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmd, int nShow) {
     int sh = GetSystemMetrics(SM_CYSCREEN);
 
     InitializeCriticalSection(&g_cs);
-    SetLine(0, "usbtest v0.3 (activate) starting...");
-    SetLine(1, "deploys UKW + binds Apple VID");
+    SetLine(0, "usbtest v0.6 (BuiltIn) starting...");
+    SetLine(1, "writes both USB-CL and BuiltIn");
     SetLine(2, "then: PLUG IPHONE");
 
-    g_hwnd = CreateWindowW(WC_USBTEST, L"usbtest v0.3", WS_VISIBLE | WS_CAPTION,
+    g_hwnd = CreateWindowW(WC_USBTEST, L"usbtest v0.6", WS_VISIBLE | WS_CAPTION,
                            0, 0, sw, sh, NULL, NULL, hInst, NULL);
     ShowWindow(g_hwnd, SW_SHOW);
     UpdateWindow(g_hwnd);
