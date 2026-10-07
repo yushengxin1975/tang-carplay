@@ -1,7 +1,8 @@
 name: Build PC unit tests
 on:
   push:
-    branches: [master]
+    branches:
+      - master
   workflow_dispatch:
 
 jobs:
@@ -13,12 +14,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install MinGW (LLVM-MinGW UCRT)
+      - name: Install MinGW
+        shell: powershell
         run: |
           winget install --id=MartinStorsjo.LLVM-MinGW.UCRT --accept-package-agreements --accept-source-agreements --silent
-        shell: powershell
 
       - name: Build and test
+        shell: powershell
         run: |
           $gpp = (Get-ChildItem -Recurse 'C:\Program Files\LLVM-MinGW\bin' -Filter 'g++.exe' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
           Write-Host "g++: $gpp"
@@ -29,4 +31,13 @@ jobs:
               -o build/test.exe
           if (Test-Path build/test.exe) { Write-Host "build OK" } else { Write-Error "build failed" }
           ./build/test.exe | Tee-Object -FilePath test.log
-        shell: powershell
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pc-unit-test
+          path: |
+            build/test.exe
+            test.log
+          if-no-files-found: ignore
