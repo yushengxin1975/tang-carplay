@@ -1,58 +1,79 @@
-# 唐 2015 WinCE 车机直连 CarPlay 项目
+# 唐 2015 WinCE 车机直连 CarPlay 项目（路线 v3）
 
-在比亚迪唐 2015 旗舰版（WinCE 6.0 ARM 车机）上**不借助任何外置盒子**，直接实现有线 CarPlay 接收器。
+在比亚迪唐 2015 旗舰版（MT3360/WinCE 6.0）上实现 iPhone 直连 CarPlay。双轨推进：
 
-## 硬件/软件前提（已调研确认）
+## 已确认硬件（probe v0.1 日志 + v0.3 实测，见 docs/HARDWARE.md）
 
-- 车机 OS：Windows CE（内核 6.0，ARM，10 寸屏）— 待 probe.exe 上车最终确认
-- USB 口为 host 模式且可与手机做数据通信（亿连 2015 款唐 USB 投屏成功佐证）
-- 可通过 U 盘 + 导航路径运行第三方 CE 程序
+- SoC：MediaTek MT33XX（MT3360 系），ARM1176JZF-S (procType 2934) 单核 ARMv6
+- GPU：Mali-200 + UMP（零拷贝显示管线可用）
+- RAM 384MB（free 282MB）｜屏 1024×600@16｜双 USB HCD（HCD1/HCD2）
+- 视频硬解：VDEC（经 OMX_CORE.DLL + VDEC_DCH60.dll 调用，AutoKit 包内即有）
+- 挂载：\SDMemory、\SDMemory2｜车控 MCU：LPC1758（VirtualSerial 通道）
 
-## 阶段计划
+## 关键认知修正（2026-10-07）
 
-### Phase 0 — 上车环境探测（probe.exe）
-- [x] 编写 probe.c（本仓库 probe/）
-- [ ] U 盘 FAT32 放 probe.exe，车机上以导航路径/U 盘入口运行
-- [ ] 确认：CE 版本 = 6.0、CPU = ARMv4I/ARMv6、分辨率、内存、USB host 驱动、存储卡挂载点
-- **判定：任一项不符 → 记录并评估影响；USB host 不可用 → 项目终止，转盒子/换屏方案**
+1. iPhone 15 = USB-C，插有数据功能的主机即完成 USB 枚举——Lightning 时代的
+   USB Restricted Mode 叙事不适用，无需任何 PD 唤醒线
+2. usbwatch 看不到 iPhone 事件 ≠ 没枚举——Drivers\Active 只显示已绑定客户端驱动的
+   设备；BYD 原厂无 Apple VID 驱动所以无条目。装上 LoadClients\1452 即可被 UKW 认领
+3. 写 TF 卡 FAT 会触发 BYD 防破解（probe v0.1 教训）；注册表 + \Windows 写入是
+   AutoKit 每次运行的常规操作，安全
+4. LoadClients 键名用十进制 VID：Apple 0x05AC=1452，MagicComm 0x1314=4884
 
-### Phase 1 — WinCE USB host ↔ iPhone 通信（已大幅降级）
-- [x] 找到 VNC Automotive CEUSBKWrapper（LGPL, GitHub 已克隆）—— AutoKit 发行包里的 `CEUSBBOX.dll` = `ceusbkwrapperdrv.dll`（USBD 客户端内核驱动），`ceusbkwrapper.dll` = Ukw 用户库，**已在你车上验证过**
-- [x] 注册表机制：`HKLM\Drivers\USB\ClientDrivers\Usb_Kernel_Wrapper` + `LoadClients\<VID>\Default\Default\Usb_Kernel_Wrapper`
-- [ ] 上车实测（`usbtest.exe`）：装两条 VID 绑定（Apple 0x05AC=1452 + Magic 1314），跑 UkwOpenDriver → 枚举 → 控制传输 → claim
-- [ ] iAP2 / CarPlay 协议栈移植（**仅在 Phase 1 通过后开展**）
+## 双轨计划
 
-> 参考：第三方 CEUSBKWrapper（用户态 libusb-win32 风格）+ maaiika/Carplay 泄露 SDK + xcertplay 协议层
+### 轨道一（短期）：patched AutoKit 2019
+- [x] 定位版本字符串 0x421FC（UTF-16LE "2019.06.27-2715"）
+- [x] patch 为 "2018.06.20-2021"（5 字节差异，全在 30 字节目标区间内）
+- [x] 部署到 D:\gps_byd（startup.exe / AutoKit.exe + 卡上原版备份）
+- [ ] 上车验证：Carlinkit 主界面 → 插 iPhone → CarPlay
+- 失败时：逆向 \temp\astepversion 找二级校验
 
-### Phase 2 — iAP2 / CarPlay 协议栈移植（C++）
-- [ ] PC 上先用 xcertplay + Python(wiomoc/iap2) 抓完整握手流程存档
-- [ ] C++ 实现 iAP2 link/session 层（对照 maaiika/Carplay 泄露 SDK 的 Transport 层）
-- [ ] 软件认证：加载 .p7b 证书 + .pk8 私钥（Carlinkit 提取身份，xcertplay 已验证该路线）
-- [ ] CarPlay 会话建立：HiFi 流 + 触控/按键/车辆状态回传
+### 轨道二（长期）：直连 iPhone（本路线，Phase 编号沿用）
 
-### Phase 3 — 音视频渲染
-- [ ] ffmpeg CE6 ARM 软解 H.264（分辨率按车机屏，目标 800x480@30）
-- [ ] DirectDraw/GDI 渲染 + 帧率调优（carlive 的渲染管线直接复用）
-- [ ] AAC-LC 解码 → WaveOut 播放；waveIn 采集麦克风（Siri）
-- [ ] 触控事件 → iAP2 触控消息回传 iPhone
+#### Phase 1 — USB 栈绑定 iPhone（usbtest v0.2 零写卡版）
+- [x] 复用 CEUSBKWrapper（CEUSBBOX.dll + ceusbkwrapper.dll，车上已验证）
+- [x] 注册表：ClientDrivers\Usb_Kernel_Wrapper(UKW) + LoadClients\1452 + \4884
+- [x] 零写卡改造（屏幕输出；\Windows 拷贝 + 注册表写入保留——AutoKit 常规操作）
+- [ ] 上车验证四项：UKW_STACK / DEVICE_ENUM / CTRL_XFER / CLAIM
+- 通过线 = USB 层全通，进入 Phase 2
 
-### Phase 4 — 集成与打磨
-- [ ] 常驻进程 + 导航路径一键启动
-- [ ] 白天/黑夜模式、音频焦点（倒车雷达/导航播报优先）
-- [ ] 长期稳定性、iOS 升级兼容性跟踪
+#### Phase 2 — iAP2 + 软件 MFi 认证（PC 上开发为主）
+- [ ] usbmux 帧层（参考 libimobiledevice/usbmuxd 协议，跑在 Ukw bulk 传输上）
+- [ ] iAP2 link/session 层（参考 maaiika/Carplay 泄露 SDK 的 Transport 层，C++）
+- [ ] PlatformPOSIX → PlatformWCE 移植层
+- [ ] 软件认证：.p7b 证书 + .pk8 私钥（xcertplay 已验证该路线，DiPlay 同源）
+- [ ] CarPlay 会话建立（HiFi 流 + 触控/按键回传）
+
+#### Phase 3 — 音视频管线（MT3360 硬解，架构升级）
+- [ ] OMX 硬解 H.264：复用 AutoKit 包内 OMX_CORE.DLL + VDEC_DCH60.dll
+      （比 ffmpeg 软解强一个量级；ARM1176 软解只是兜底）
+- [ ] UMP 零拷贝 → DirectDraw 显示（Mali-200 合成）
+- [ ] 音频：AAC → libfdk-aac-0.dll（AutoKit 包内有）→ waveOut
+- [ ] 麦克风采集（Siri）→ waveIn
+- [ ] 触控事件 → iAP2 触控消息
+
+#### Phase 4 — 集成
+- [ ] 常驻 + startup.exe 入口（车机只认此文件名，换程序=换文件内容）
+- [ ] 方向盘按键：LPC1758 MCU（VirtualSerial）通道
+- [ ] 音频焦点（倒车提示/导航播报优先）
+- [ ] iOS 升级兼容性跟踪（软件身份风险，与 DiPlay 同）
 
 ## 参考仓库（third_party/，不入库）
 
 | 目录 | 来源 | 用途 |
 |---|---|---|
-| xcertplay | shilapi/xcertplay | 完整软件 CarPlay 接收器（Kotlin），协议逻辑参考 |
-| carlive | samcaicn/carlive | WinCE6 C++ 收流/ffmpeg/GDI/触控骨架，编译链路照抄 |
-| AccessorySDK | maaiika/Carplay | 苹果 CarPlay 配件 SDK 泄露版 C++，核心协议实现 |
-| FordAutoKit | typlo-gh/Ford-WINCE-Autokit | TC CE 文件管理器 + AutoKit CE 客户端（逆向分析用） |
+| xcertplay | shilapi/xcertplay | 完整软件 CarPlay 接收器（Kotlin），协议+软件认证参考 |
+| AccessorySDK | maaiika/Carplay | 苹果 CarPlay 配件 SDK 泄露版 C++，iAP2 核心参考 |
+| carlive | samcaicn/carlive | WinCE6 C++ 渲染/音频骨架 + CeGCC 编译链 |
+| CEUSBKWrapper | VNCAutomotive/CEUSBKWrapper | UKW USB 驱动开源上游（LGPL） |
+| ludwig-cplay2air | ludwig-v/... | CPlay2Air 无线盒固件逆向（参考价值有限，非 CPC200 有线） |
+| FordAutoKit | typlo-gh/Ford-WINCE-Autokit | 2019 AutoKit 发行包来源 + TC CE 工具 |
 
 ## 风险清单
 
-1. 软件认证身份可能被 iOS 更新封杀（DiPlay 同风险，无法规避）
-2. CE6 SoC H.264 软解性能不足 → 降帧率/降分辨率兜底
-3. 苹果 AccessorySDK 泄露源码的 C++ 标准较新，需降级适配 VS2008/cegcc
-4. 法律灰色：MFi 逆向 + 泄露 SDK，仅限自用，勿分发固件
+1. 软件身份可能被 iOS 更新封杀（DiPlay 同风险）
+2. AccessorySDK 泄露源码需降级适配 CeGCC/ARMv6
+3. OMX 接口无文档——逆向 AutoKit 调用序列（PAL2.dll/D2.dll）
+4. 法律灰色：MFi 逆向 + 泄露 SDK，仅限自用
+5. 写卡触发 BYD 防破解——所有工具必须零写卡
