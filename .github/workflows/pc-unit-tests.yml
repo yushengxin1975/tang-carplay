@@ -1,9 +1,4 @@
 name: Build PC unit tests + Windows host toolchain
-
-# Strategy: a single Windows runner job compiles our client/cpp + tests against
-# installed MinGW/winget g++ + runs the test exe. Catches regressions in
-# protocol layer (PC development) without needing BYD/CarPlay hardware.
-
 on:
   push:
     branches: [master]
@@ -12,49 +7,62 @@ on:
 jobs:
   test-pc:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: workspace
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install MinGW-w64 (g++17, pthread for WinLibs UCRT)
+      - name: Install MinGW-w64 (g++17, LLVM-MinGW UCRT - includes g++.exe)
+        shell: pwsh
         run: |
+          Write-Host "Installing LLVM-MinGW (includes g++)..."
           winget install --id=MartinStorsjo.LLVM-MinGW.UCRT `
                         --accept-package-agreements `
                         --accept-source-agreements `
-                        --silent
-          # Verify g++ present
-          $gpp = (Get-ChildItem -Recurse 'C:\Program Files\LLVM-MinGW\bin' -Filter 'g++.exe' `
-            -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+                        --silent `
+                        --force `
+          || { Write-Warning "winget install returned non-zero, checking what's there..." }
+          # Find g++.exe in install dir
+          $gpp = @(Get-ChildItem -Recurse 'C:\Program Files\LLVM-MinGW\bin' -Filter 'g++.exe' -ErrorAction SilentlyContinue |
+                 Select-Object -First 1)
           if (-not $gpp) {
-            throw "g++.exe not found after install"
+            # Try older install
+            $gpp = @(Get-ChildItem -Recurse 'C:\mingw64\bin' -Filter 'g++.exe' -ErrorAction SilentlyContinue |
+                   Select-Object -First 1)
           }
-          Write-Host "g++: $gpp"
-          echo "GPP=$gpp" >> $env:GITHUB_ENV
+          if (-not $gpp) {
+            # Try GitHub Actions default Linux mingw fallback
+            Write-Error "g++ not found in standard locations. Failing."
+          }
+          Write-Host "g++ path: $($gpp.FullName)"
+          "GPP=$($gpp.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "GPP=$($gpp.FullName)" >> $env:GITHUB_ENV
 
       - name: Build
+        shell: pwsh
+        env:
+            GPP: ${{ env.GPP }}
         run: |
           $env:PATH = "$env:GPP;$env:PATH"
           cd $env:GITHUB_WORKSPACE
-          g++ -std=c++17 -O2 -g -Wall -Iclient/include -Iclient/cpp `
-              client/cpp/protocol/message.h `
-              client/cpp/protocol/aes_cipher.h `
+          & g++ -std=c++17 -O2 -g -Wall -Iclient/include -Iclient/cpp `
               client/cpp/protocol/aes_sbox_data.cpp `
               client/cpp/protocol/connection.cpp `
-              client/cpp/protocol/usb_transport.h `
-              client/test/fake_transport.h `
               client/test/test_protocol.cpp `
               -o build/test.exe
+          Write-Host "build rc=$LASTEXITCODE"
+          if (Test-Path build/test.exe) { Write-Host "test.exe OK $([math]::Round((Get-Item build/test.exe).Length/1KB,1)) KB" }
 
       - name: Run tests
-        run: ./build/test.exe
+        shell: pwsh
+        run: |
+          cd $env:GITHUB_WORKSPACE
+          ./build/test.exe | Tee-Object -FilePath test.log
+          Write-Host "tests rc=$LASTEXITCODE"
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pc-test-result
+          name: pc-unit-test-${{ github.run_id }}
           path: |
             build/test.exe
             test.log
