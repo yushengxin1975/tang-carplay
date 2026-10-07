@@ -23,14 +23,17 @@ jobs:
         shell: powershell
         run: |
           $gpp = (Get-ChildItem -Recurse 'C:\Program Files\LLVM-MinGW\bin' -Filter 'g++.exe' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          if (-not $gpp) { $gpp = (Get-ChildItem -Recurse 'C:\Program Files\LLVM-MinGW' -Filter 'g++.exe' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName }
+          if (-not $gpp) { Write-Error "g++ not found"; exit 1 }
           Write-Host "g++: $gpp"
-          # Use cmd.exe /c to run g++ with backslash-continued args (PS line-continuation with backtick is fragile inside YAML/JSON)
-          $b = New-Object System.Text.StringBuilder
-          [void]$b.Append('"').Append($gpp).Append('" -std=c++17 -O2 -g -Wall -Iclient/include -Iclient/cpp client/cpp/protocol/aes_sbox_data.cpp client/cpp/protocol/connection.cpp client/test/test_protocol.cpp -o build/test.exe')
-          $cmd = $b.ToString()
+          # Add LLVM-MinGW bin to PATH for runtime + write the cmd.exe string
+          $env:PATH = (Split-Path $gpp) + ';' + $env:PATH
+          $args = '-std=c++17 -O2 -g -Wall -Iclient/include -Iclient/cpp client/cpp/protocol/aes_sbox_data.cpp client/cpp/protocol/connection.cpp client/test/test_protocol.cpp -o build/test.exe'
+          $cmd = ('"' + $gpp + '" ' + $args)
           Write-Host "cmd: $cmd"
           cmd.exe /c $cmd
-          if (Test-Path build/test.exe) { Write-Host "BUILD OK" } else { Write-Error "BUILD FAIL" }
+          if (Test-Path build/test.exe) { Write-Host "BUILD OK $([math]::Round((Get-Item build/test.exe).Length/1KB,1)) KB" }
+          else { Write-Error "BUILD FAIL"; exit 1 }
           ./build/test.exe | Tee-Object -FilePath test.log
 
       - name: Upload artifacts
