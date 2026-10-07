@@ -1,0 +1,61 @@
+name: Build PC unit tests + Windows host toolchain
+
+# Strategy: a single Windows runner job compiles our client/cpp + tests against
+# installed MinGW/winget g++ + runs the test exe. Catches regressions in
+# protocol layer (PC development) without needing BYD/CarPlay hardware.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  test-pc:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: workspace
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW-w64 (g++17, pthread for WinLibs UCRT)
+        run: |
+          winget install --id=MartinStorsjo.LLVM-MinGW.UCRT `
+                        --accept-package-agreements `
+                        --accept-source-agreements `
+                        --silent
+          # Verify g++ present
+          $gpp = (Get-ChildItem -Recurse 'C:\Program Files\LLVM-MinGW\bin' -Filter 'g++.exe' `
+            -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          if (-not $gpp) {
+            throw "g++.exe not found after install"
+          }
+          Write-Host "g++: $gpp"
+          echo "GPP=$gpp" >> $env:GITHUB_ENV
+
+      - name: Build
+        run: |
+          $env:PATH = "$env:GPP;$env:PATH"
+          cd $env:GITHUB_WORKSPACE
+          g++ -std=c++17 -O2 -g -Wall -Iclient/include -Iclient/cpp `
+              client/cpp/protocol/message.h `
+              client/cpp/protocol/aes_cipher.h `
+              client/cpp/protocol/aes_sbox_data.cpp `
+              client/cpp/protocol/connection.cpp `
+              client/cpp/protocol/usb_transport.h `
+              client/test/fake_transport.h `
+              client/test/test_protocol.cpp `
+              -o build/test.exe
+
+      - name: Run tests
+        run: ./build/test.exe
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pc-test-result
+          path: |
+            build/test.exe
+            test.log
+        if-no-files-found: ignore
