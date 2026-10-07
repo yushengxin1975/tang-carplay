@@ -1,79 +1,158 @@
-# 唐 2015 WinCE 车机直连 CarPlay 项目（路线 v3）
+# 唐 2015 WinCE 车机 Carlinkit 客户端（路径 B）
 
-在比亚迪唐 2015 旗舰版（MT3360/WinCE 6.0）上实现 iPhone 直连 CarPlay。双轨推进：
+为比亚迪唐 2015 旗舰版（MT3360/WinCE 6.0）打造**自主 Carlinkit 客户端**。取代当前依赖的 AutoKit WinCE 客户端。
 
-## 已确认硬件（probe v0.1 日志 + v0.3 实测，见 docs/HARDWARE.md）
+## 项目状态（2026-10-07 收尾）
 
-- SoC：MediaTek MT33XX（MT3360 系），ARM1176JZF-S (procType 2934) 单核 ARMv6
-- GPU：Mali-200 + UMP（零拷贝显示管线可用）
-- RAM 384MB（free 282MB）｜屏 1024×600@16｜双 USB HCD（HCD1/HCD2）
-- 视频硬解：VDEC（经 OMX_CORE.DLL + VDEC_DCH60.dll 调用，AutoKit 包内即有）
-- 挂载：\SDMemory、\SDMemory2｜车控 MCU：LPC1758（VirtualSerial 通道）
-
-## 关键认知修正（2026-10-07）
-
-1. iPhone 15 = USB-C，插有数据功能的主机即完成 USB 枚举——Lightning 时代的
-   USB Restricted Mode 叙事不适用，无需任何 PD 唤醒线
-2. usbwatch 看不到 iPhone 事件 ≠ 没枚举——Drivers\Active 只显示已绑定客户端驱动的
-   设备；BYD 原厂无 Apple VID 驱动所以无条目。装上 LoadClients\1452 即可被 UKW 认领
-3. 写 TF 卡 FAT 会触发 BYD 防破解（probe v0.1 教训）；注册表 + \Windows 写入是
-   AutoKit 每次运行的常规操作，安全
-4. LoadClients 键名用十进制 VID：Apple 0x05AC=1452，MagicComm 0x1314=4884
-
-## 双轨计划
-
-### 轨道一（短期）：patched AutoKit 2019
-- [x] 定位版本字符串 0x421FC（UTF-16LE "2019.06.27-2715"）
-- [x] patch 为 "2018.06.20-2021"（5 字节差异，全在 30 字节目标区间内）
-- [x] 部署到 D:\gps_byd（startup.exe / AutoKit.exe + 卡上原版备份）
-- [ ] 上车验证：Carlinkit 主界面 → 插 iPhone → CarPlay
-- 失败时：逆向 \temp\astepversion 找二级校验
-
-### 轨道二（长期）：直连 iPhone（本路线，Phase 编号沿用）
-
-#### Phase 1 — USB 栈绑定 iPhone（usbtest v0.2 零写卡版）
-- [x] 复用 CEUSBKWrapper（CEUSBBOX.dll + ceusbkwrapper.dll，车上已验证）
-- [x] 注册表：ClientDrivers\Usb_Kernel_Wrapper(UKW) + LoadClients\1452 + \4884
-- [x] 零写卡改造（屏幕输出；\Windows 拷贝 + 注册表写入保留——AutoKit 常规操作）
-- [ ] 上车验证四项：UKW_STACK / DEVICE_ENUM / CTRL_XFER / CLAIM
-- 通过线 = USB 层全通，进入 Phase 2
-
-#### Phase 2 — iAP2 + 软件 MFi 认证（PC 上开发为主）
-- [ ] usbmux 帧层（参考 libimobiledevice/usbmuxd 协议，跑在 Ukw bulk 传输上）
-- [ ] iAP2 link/session 层（参考 maaiika/Carplay 泄露 SDK 的 Transport 层，C++）
-- [ ] PlatformPOSIX → PlatformWCE 移植层
-- [ ] 软件认证：.p7b 证书 + .pk8 私钥（xcertplay 已验证该路线，DiPlay 同源）
-- [ ] CarPlay 会话建立（HiFi 流 + 触控/按键回传）
-
-#### Phase 3 — 音视频管线（MT3360 硬解，架构升级）
-- [ ] OMX 硬解 H.264：复用 AutoKit 包内 OMX_CORE.DLL + VDEC_DCH60.dll
-      （比 ffmpeg 软解强一个量级；ARM1176 软解只是兜底）
-- [ ] UMP 零拷贝 → DirectDraw 显示（Mali-200 合成）
-- [ ] 音频：AAC → libfdk-aac-0.dll（AutoKit 包内有）→ waveOut
-- [ ] 麦克风采集（Siri）→ waveIn
-- [ ] 触控事件 → iAP2 触控消息
-
-#### Phase 4 — 集成
-- [ ] 常驻 + startup.exe 入口（车机只认此文件名，换程序=换文件内容）
-- [ ] 方向盘按键：LPC1758 MCU（VirtualSerial）通道
-- [ ] 音频焦点（倒车提示/导航播报优先）
-- [ ] iOS 升级兼容性跟踪（软件身份风险，与 DiPlay 同）
-
-## 参考仓库（third_party/，不入库）
-
-| 目录 | 来源 | 用途 |
+| 轨道 | 状态 | 备注 |
 |---|---|---|
-| xcertplay | shilapi/xcertplay | 完整软件 CarPlay 接收器（Kotlin），协议+软件认证参考 |
-| AccessorySDK | maaiika/Carplay | 苹果 CarPlay 配件 SDK 泄露版 C++，iAP2 核心参考 |
-| carlive | samcaicn/carlive | WinCE6 C++ 渲染/音频骨架 + CeGCC 编译链 |
-| CEUSBKWrapper | VNCAutomotive/CEUSBKWrapper | UKW USB 驱动开源上游（LGPL） |
-| ludwig-cplay2air | ludwig-v/... | CPlay2Air 无线盒固件逆向（参考价值有限，非 CPC200 有线） |
-| FordAutoKit | typlo-gh/Ford-WINCE-Autokit | 2019 AutoKit 发行包来源 + TC CE 工具 |
+| 软硬件档案（MT3360/ARM1176/Mali/OMX） | ✅ 完成 | docs/HARDWARE.md |
+| patched AutoKit 临时可用版本 | ✅ 验证可用 | 仅作过渡，卡上有副本 |
+| 直连 iPhone 路线 | ❌ 失败 | BYD OEM 限制 USB 客户端驱动注册路径 |
+| **Carlinkit 客户端重写（本路线）** | 🔄 启动 | 本文件 |
 
-## 风险清单
+## 已知 AutoKit 缺陷（要修掉的）
 
-1. 软件身份可能被 iOS 更新封杀（DiPlay 同风险）
-2. AccessorySDK 泄露源码需降级适配 CeGCC/ARMv6
-3. OMX 接口无文档——逆向 AutoKit 调用序列（PAL2.dll/D2.dll）
-4. 法律灰色：MFi 逆向 + 泄露 SDK，仅限自用
-5. 写卡触发 BYD 防破解——所有工具必须零写卡
+| 缺陷 | 性质 | 新路线对策 |
+|---|---|---|
+| 音量无法调节 | AutoKit 软件 bug | 重写后完全控制音量映射到 BYD mixer |
+| 音质差 | USB 音频 vs 原车蓝牙 | 优化 fdk-aac 编码参数 / 考虑转回蓝牙 |
+| 分辨率低 | AutoKit 协议层只取低分辨率 | 直接控制 stream 通过 ICMP/握手取最高分辨率（1080p@60） |
+| 插拔两次 Carlinkit 才连上 | AutoKit USB 握手 bug | 重写连接状态机 |
+
+## 架构
+
+```
+iPhone → [Lightning/C] → Carlinkit 盒子 (iAP2 + MFi 内部)
+                                    │
+                                    │  私有协议 over USB bulk/control
+                                    ▼
+                            Windows CE 6.0 ARM (BYD 唐)
+                                    │
+        ┌───────────────────────────┼─────────────────────────────┐
+        ▼                           ▼                            ▼
+  CEUSBKWrapper            FastCarPlay 协议移植              OMX 硬解管线
+  (USB kernel driver)        (Box protocol parser)            (MT3360 VDEC)
+                                    │                              │
+                                    ▼                              ▼
+                              视频 H.264 + 音频 AAC      Mali-200 合成
+                              decode/sync                (DirectDraw →)
+                                    │
+                                    ▼
+                              WaveOut + BYD mixer
+```
+
+**关键技术决策**：
+
+1. **iAP2 / MFi 由 Carlinkit 盒子内部处理**——我们不直接跟 iPhone iAP2 握手。盒子和 iPhone 之间的私有协议是 Carlinkit 的黑盒，**但盒子对外接口协议（PC ↔ Box）已被开源项目（FastCarPlay）逆向**。
+3. **视频硬解直接用 AutoKit 包内的 OMX 硬解 DLL**（开源 OMX IL 标准的 MT33xx 优化实现），避开 ffmpeg 软解 ARMv6 性能瓶颈。
+5. **音频用 fdk-aac-0.dll**（AutoKit 包内）+ Windows WaveAPI 输出。
+7. **触屏回传**：BYD 屏幕有 Touch panel 驱动 → 我们的程序捕获 → 编码为 Carlinkit 触屏包发送给盒子。
+
+## 阶段计划
+
+### Phase B.0 — 准备阶段（PC 上，1 周）
+- 读 FastCarPlay 源码，把 Carlinkit 协议处理层（C++）分析清楚
+- 读 catplay-labs/catplay 源码（CPlay2Air 协议 Rust 实现）作为对比
+- 读 ludwig-v/wireless-carplay-dongle-reverse-engineering（文档化协议）
+- **产出文档**：`docs/CARLINKIT_PROTOCOL.md`（协议分层、数据包格式、消息类型）
+
+### Phase B.1 — 用户态重新编译 CarLinkit 客户端到 CE6 ARM（PC 开发 + 模拟测试，3-4 周）
+- 新项目目录 `client/`：
+    - `cpp/` C++ 源码（核心：协议 parser、packet builder）
+    - `ce_main.c` C 入口（用 CeGCC 编译）
+    - `win_main.cpp` Windows 入口（PC 调试用）
+    - `Makefile.cegcc` + `Makefile.host`
+- 复用 ENLYZE/CEUSBKWrapper 的 CEUSBBOX/ceusbkwrapper（LGPL OK）
+- 复用 AutoKit 的 OMX_CORE.DLL + VDEC_DCH60.dll + libfdk-aac-0.dll + avcodec-56.dll（运行时 DLL，放进 libx/ 目录）
+- **验证**：PC 上跑 win_main，用 libusbdotnet 模拟 box 协议做端到端测试
+
+### Phase B.2 — 车上集成（v0.1，2 周）
+- 编译 CE 版本，部署到卡
+- 通过 startup.exe 启动（替换 AutoKit）
+- **验证**：连接 Carlinkit 盒子 + iPhone，看视频流和音频是否能跑
+- **第一次成功**：我们有了自主流媒体客户端
+
+### Phase B.3 — 优化与修复 AutoKit 4 大问题（每关 1-2 周）
+- **3.1** 音量控制：写自定义 BYD mixer hook（or AudioRouting API）+ 把 BYD 方向盘音量消息 → Wave API
+- **3.2** 画质提升：协议层设最高 H.264 profile / resolution，使用 OMX 解码到更高分辨率后扫描再 MediaSource
+- **3.3** 连接稳定性：实现完整状态机（attach → 配置 → 流的稳定握手），处理 box reset / iPhone trust / iOS 重启
+
+### Phase B.4 — UI + 集成（1-2 周）
+- 触屏捕获（Windows CE TouchPanel API）→ 发送给盒子
+- 音量/亮度等控件（BYD CAN 消息 or KBD 驱动 hook）
+- 中文输入支持（如需）
+- 与 BYD 原车 UI 集成（最小侵入：全屏覆盖）
+
+## 项目仓库结构（计划）
+
+```
+tang-carplay/
+├── client/                        ← 主项目（新建）
+│   ├── cpp/
+│   │   ├── protocol/             ← Carlinkit 协议 parser
+│   │   │   ├── discovery.{cpp,h}
+│   │   │   ├── media_stream.{cpp,h}
+│   │   │   ├── packet.{cpp,h}
+│   │   │   └── touch_input.{cpp,h}
+│   │   ├── decode/
+│   │   │   ├── omx_h264.{cpp,h}  ← OMX IL 包装
+│   │   │   ├── aac_decode.{cpp,h}
+│   │   │   └── directdraw_render.{cpp,h}
+│   │   ├── audio/
+│   │   │   ├── waveout_sink.{cpp,h}
+│   │   │   └── volume_control.{cpp,h}
+│   │   └── ce_main.c             ← Windows CE 入口
+│   ├── Makefile.cegcc            ← CeGCC ARM 交叉编译
+│   ├── Makefile.host             ← PC 调试
+│   └── libx/                     ← 运行时依赖（OMX/AAC DLLs）
+├── docs/
+│   ├── HARDWARE.md               ← 已完成
+│   ├── ONCAR.md
+│   ├── ONETRIP.md
+│   ├── ROADMAP.md                ← 本文件
+│   └── CARLINKIT_PROTOCOL.md     ← Phase B.0 产出
+├── probe/                         ← 已完成的零写卡工具（保留）
+├── usbtest/                       ← Phase 1 工具（保留，已知 BYD OEM 限制）
+├── usbwatch/                      ← 已完成
+├── bench/                         ← 已完成
+├── third_party/                   ← 参考源码（不入库）
+│   ├── FastCarPlay/              ← Phase B.0 参考
+│   ├── catplay/                  ← Phase B.0 参考
+│   ├── carlive/                  ← Phase B.0/1 渲染参考
+│   ├── CEUSBKWrapper/            ← Phase B.1 USB 栈
+│   ├── AutoKit_WinCE/            ← BIN 资源（OMX/AAC DLLs 来源）
+│   └── xcertplay/                 ← 参考（Android 上成功做 CarPlay）
+└── patch-backup/                 ← AutoKit patch 备份
+```
+
+## 风险与依赖
+
+| 项 | 风险 | 缓解 |
+|---|---|---|
+| Carlinkit 盒子协议变 | 中 | 固件提取+逆向参考 FastCarPlay |
+| iPhone iAP2 兼容性 | 已自动（Carlinkit 盒子有 MFi） | 不直接碰 iPhone |
+| OMX 硬解在 CE | 已验证（AutoKit 用着） | 直接复用 AutoKit 的 OMX DLLs |
+| BYD mixer 音量 | 中（BYD 私有） | 试用 WaveAudio + 找 BYD 音量控制 API |
+| 触屏 BYD 驱动 | 低（标准 TouchPanel API） | 与 AutoKit 同样的方法 |
+
+## 阶段性交付与里程碑
+
+| 里程碑 | 交付物 | 周期 |
+|---|---|---|
+| M0: docs/CARLINKIT_PROTOCOL.md | 协议文档 | 1 周 |
+| M1: client/ 端到端 PC 测试 | PC 上跑通模拟 box 流 | 4 周 |
+| M2: 卡上能运行 patched 客户端 | CE 版本部署 + Carlinkit 连上 + 视频音频输出 | +2 周 |
+| M3: AutoKit 4 大问题修复完 | 音量/画质/连接稳定 | +4-6 周 |
+| M4: 生产可用 | UI 完整 + 长期测试通过 | +1-2 周 |
+| **总计** | | **3 个月** |
+
+## 回退策略
+
+任何阶段如果发现不可行：
+- **M2/M3 失败**（CE 版本跑不通）→ 退回 patched AutoKit + 用项目档案做 CarPlay 知识库
+- **M1 失败**（FastCarPlay 移植到 CE6 卡住）→ 评估是否需要更强的工具链（vcperf？llvm？）
+
+## 当前活跃工作
+
+**等待用户指示**开始 Phase B.0（PC 上读 FastCarPlay 源码）。
