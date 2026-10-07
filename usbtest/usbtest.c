@@ -1,25 +1,20 @@
-/* usbtest.c — 唐2015 WinCE USB 栈验证器 v0.2 (零写卡版)
+/* usbtest.c — 唐2015 WinCE USB 栈验证器 v0.3 (零写卡 + ActivateDeviceEx)
  *
- * v0.1 → v0.2 关键变化（吸取 probe v0.1 写坏 FAT 的教训）：
- *   - 删除所有写到 TF 卡的文件操作（日志改屏幕 ring buffer）
- *   - 保留注册表写入 + \Windows DLL 拷贝 —— 这两项 AutoKit 每次运行都在做，
- *     在此车上多年验证安全，且不触碰 TF 卡 FAT
+ * v0.2 → v0.3 变化（修复 v0.2 实测 err=87 UkwOpenDriver 失败）：
+ *   1. CEUSBBOX.dll → \Windows\USBKIT.DLL（新文件名，避免覆盖 AutoKit 自己的 \Windows\CEUSBBOX.dll）
+ *   2. 注册表 ClientDrivers\Usb_Kernel_Wrapper.Dll = USBKIT.DLL（bare 名走 \Windows 搜索路径）
+ *   3. 加 ActivateDeviceEx() 调用强制 USBD 加载驱动——这是 WinCE 客户端驱动注册的标准两步：
+ *      写 ClientDrivers 注册表（声明驱动）→ ActivateDeviceEx 注册（实例化驱动）
+ *      没有这一步，UkwOpenDriver 内部 CreateFile("UKW1:") 找不到驱动返回 err=87
+ *   4. 错误信息更详细（错误码 + 路径）
  *
- * 直连路线的验证闭环（基于修正后的认知）：
- *   iPhone 15 USB-C 插上有数据功能的主机即完成 USB 枚举；
- *   之前 usbwatch 看不到事件是因为 Drivers\Active 只显示"已绑定驱动"，
- *   BYD 原厂没有 Apple VID 的客户端驱动 → 没人认领 → 无事件。
- *   本工具装上 CEUSBKWrapper（LoadClients\1452 = Apple VID 0x05AC）后：
- *   iPhone 再插入就会被 UKW 驱动认领 → Ukw API 可枚举/控制传输/抢占接口
- *
- * 验证项（全部屏幕显示）：
- *   UKW_STACK  : UkwOpenDriver OK = 内核驱动加载成功
- *   DEVICE_ENUM: 枚举到 VID 0x05AC 设备
- *   CTRL_XFER  : 控制传输读 iProduct/iSerial 字符串成功 = 数据双向通
- *   CLAIM      : 抢占 vendor 接口成功 = iAP2 通道可用
- *
- * 运行要求：EXE 同目录放 CEUSBBOX.dll 和 ceusbkwrapper.dll（来自 AutoKit BIN）
- * 流程：启动（自动写注册表）→ 屏幕提示 PLUG IPHONE NOW → 插 iPhone → 看结论
+ * 验证项（屏幕 ring buffer）：
+ *   A: deploy DLL    → push A 事件 + 屏幕行 0
+ *   B: registry     → push B 事件 + 屏幕行 0
+ *   C: ActivateDev   → push DEVICE EVENT → 如果设备事件触发 → 内核驱动真的活了
+ *   D: load ukw lib  → push D
+ *   E: UkwOpenDriver → 屏幕行 1 UKW STACK OK/FAIL
+ *   F: poll + enum iPhone → 屏幕行 2-3 ENUM/XFER/CLAIM verdicts
  */
 
 #include <windows.h>
@@ -34,7 +29,7 @@ static void W2A_local(const WCHAR *w, char *a, unsigned cap) {
     a[i] = 0;
 }
 
-/* ---------------- UKW 类型和函数指针（动态加载，无头文件依赖） ---------------- */
+/* ---------------- UKW 类型和函数指针 ---------------- */
 typedef void *UKW_DEVICE;
 typedef struct {
     UINT8  bLength, bDescriptorType;
@@ -74,12 +69,12 @@ static PFN_Release     pReleaseIface;
 static PFN_CtrlXfer    pCtrlXfer;
 static PFN_Close       pClose;
 
-/* ---------------- GUI：顶部固定行 + 事件滚动区 ---------------- */
+/* ---------------- GUI：顶部 4 行 + 滚动事件区 ---------------- */
 static HWND g_hwnd = NULL;
 static volatile BOOL g_running = TRUE;
 static volatile BOOL g_done = FALSE;
 static CRITICAL_SECTION g_cs;
-static char g_lines[4][96];            /* 顶部 4 行固定状态 */
+static char g_lines[4][96];
 
 #define EVT_LINES 9
 #define EVT_LEN   110
@@ -164,25 +159,22 @@ static void ExeDir(WCHAR *dir, DWORD cap) {
     } else wcsncpy(dir, L".", cap - 1);
 }
 
-static BOOL WriteRegStr(HKEY root, const WCHAR *sub, const WCHAR *val, const WCHAR *data) {
+static BOOL WriteRegStr(HKEY r, const WCHAR *sub, const WCHAR *val, const WCHAR *data) {
     HKEY hk;
-    if (RegCreateKeyExW(root, sub, 0, NULL, 0, 0, NULL, &hk, NULL) != ERROR_SUCCESS)
-        return FALSE;
-    LONG r = RegSetValueExW(hk, val, 0, REG_SZ, (const BYTE *)data,
-                            (DWORD)(wcslen(data) + 1) * sizeof(WCHAR));
+    if (RegCreateKeyExW(r, sub, 0, NULL, 0, 0, NULL, &hk, NULL) != ERROR_SUCCESS) return FALSE;
+    LONG rc = RegSetValueExW(hk, val, 0, REG_SZ, (const BYTE *)data,
+                              (DWORD)(wcslen(data) + 1) * sizeof(WCHAR));
     RegCloseKey(hk);
-    return r == ERROR_SUCCESS;
+    return rc == ERROR_SUCCESS;
 }
-static BOOL WriteRegDword(HKEY root, const WCHAR *sub, const WCHAR *val, DWORD data) {
+static BOOL WriteRegDword(HKEY r, const WCHAR *sub, const WCHAR *val, DWORD data) {
     HKEY hk;
-    if (RegCreateKeyExW(root, sub, 0, NULL, 0, 0, NULL, &hk, NULL) != ERROR_SUCCESS)
-        return FALSE;
-    LONG r = RegSetValueExW(hk, val, 0, REG_DWORD, (const BYTE *)&data, sizeof(data));
+    if (RegCreateKeyExW(r, sub, 0, NULL, 0, 0, NULL, &hk, NULL) != ERROR_SUCCESS) return FALSE;
+    LONG rc = RegSetValueExW(hk, val, 0, REG_DWORD, (const BYTE *)&data, sizeof(data));
     RegCloseKey(hk);
-    return r == ERROR_SUCCESS;
+    return rc == ERROR_SUCCESS;
 }
 
-/* dump 配置描述符里的接口/端点（只往屏幕事件区输出） */
 static void DumpConfigDescriptor(UKW_DEVICE dev) {
     BYTE buf[1024];
     DWORD len = 0;
@@ -197,22 +189,21 @@ static void DumpConfigDescriptor(UKW_DEVICE dev) {
         if (bl < 2 || off + bl > len) break;
         if (bt == 4 && bl >= 9) {
             PushEvent("  IF#%u alt=%u nEP=%u cls=%02X sub=%02X proto=%02X",
-                      buf[off + 2], buf[off + 3], buf[off + 4],
-                      buf[off + 5], buf[off + 6], buf[off + 7]);
+                      buf[off+2], buf[off+3], buf[off+4],
+                      buf[off+5], buf[off+6], buf[off+7]);
         } else if (bt == 5 && bl >= 7) {
-            const char *dir = (buf[off + 2] & 0x80) ? "IN " : "OUT";
-            const char *typ = ((buf[off + 3] & 3) == 2) ? "bulk" :
-                              ((buf[off + 3] & 3) == 3) ? "int " :
-                              ((buf[off + 3] & 3) == 1) ? "iso " : "?   ";
+            const char *dir = (buf[off+2] & 0x80) ? "IN " : "OUT";
+            const char *typ = ((buf[off+3] & 3) == 2) ? "bulk" :
+                              ((buf[off+3] & 3) == 3) ? "int " :
+                              ((buf[off+3] & 3) == 1) ? "iso " : "?   ";
             PushEvent("    EP %02X(%s) %s mps=%u",
-                      buf[off + 2], dir, typ,
-                      buf[off + 4] | (buf[off + 5] << 8));
+                      buf[off+2], dir, typ,
+                      buf[off+4] | (buf[off+5] << 8));
         }
         off += bl;
     }
 }
 
-/* 读字符串描述符（证明控制传输双向可用） */
 static BOOL ReadStringDesc(UKW_DEVICE dev, UINT8 idx) {
     BYTE buf[256];
     UKW_CONTROL_HEADER h;
@@ -250,30 +241,30 @@ static DWORD WINAPI TestThread(LPVOID arg) {
     (void)arg;
     WCHAR dir[MAX_PATH];
     ExeDir(dir, MAX_PATH);
-    PushEvent("=== usbtest v0.2 zero-write start ===");
+    PushEvent("=== usbtest v0.3 (activate+USBKIT) start ===");
 
-    /* A. 部署内核驱动 DLL：拷到 \Windows（RAM 盘，不碰 TF 卡 FAT） */
-    SetLine(0, "A: deploy DLL");
-    WCHAR src2[MAX_PATH];
-    _snwprintf(src2, MAX_PATH - 1, L"%s\\CEUSBBOX.dll", dir);
+    /* A. 部署 DLL：拷到 \Windows\USBKIT.DLL（不覆盖 AutoKit 原 CEUSBBOX.dll） */
+    SetLine(0, "A: deploy USBKIT.DLL");
+    WCHAR srcKrnl[MAX_PATH];
+    _snwprintf(srcKrnl, MAX_PATH - 1, L"%s\USBKIT.DLL", dir);
     BOOL winOk = FALSE;
-    if (CopyFile(src2, L"\\Windows\\CEUSBBOX.dll", FALSE)) {
+    if (CopyFile(srcKrnl, L"\\Windows\\USBKIT.DLL", FALSE)) {
         winOk = TRUE;
-        PushEvent("A: copy CEUSBBOX.dll -> \\Windows OK");
+        PushEvent("A: copy USBKIT.DLL -> \\Windows OK");
     } else {
-        PushEvent("A: \\Windows copy fail err=%u (use SD path)", GetLastError());
+        DWORD e = GetLastError();
+        PushEvent("A: \\Windows copy fail err=%u (using SD path)", e);
     }
-    const WCHAR *drvPath = winOk ? L"CEUSBBOX.dll" : src2;
 
-    /* B. 注册表：UKW 驱动 + Apple(1452) / MagicComm(1314) 绑定 */
+    /* B. 注册表：UKW 前缀 + USBKIT.DLL bare 名（WinCopy 时走 \Windows 搜索） */
     SetLine(0, "B: registry");
-    WriteRegStr(HKEY_LOCAL_MACHINE,
+    const WCHAR *drvPath = winOk ? L"USBKIT.DLL" : srcKrnl;
+    BOOL r1 = WriteRegStr(HKEY_LOCAL_MACHINE,
         L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", L"Prefix", L"UKW");
     WriteRegStr(HKEY_LOCAL_MACHINE,
         L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", L"Dll", drvPath);
     WriteRegDword(HKEY_LOCAL_MACHINE,
         L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", L"Flags", 8);
-    /* 接口过滤：不抢 U盘/RNDIS/CDC-NCM（保护原车功能） */
     WriteRegStr(HKEY_LOCAL_MACHINE,
         L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper",
         L"InterfaceFilter_MASS_STORAGE", L"8:*:*");
@@ -283,25 +274,41 @@ static DWORD WINAPI TestThread(LPVOID arg) {
     WriteRegStr(HKEY_LOCAL_MACHINE,
         L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper",
         L"InterfaceFilter_CDC_NCM", L"2:13:*");
-    /* Apple VID 0x05AC = 1452；Magic Comm 盒子 VID 0x1314 = 4884 */
     WriteRegStr(HKEY_LOCAL_MACHINE,
         L"Drivers\\USB\\LoadClients\\1452\\Default\\Default\\Usb_Kernel_Wrapper",
         L"Dll", drvPath);
     WriteRegStr(HKEY_LOCAL_MACHINE,
         L"Drivers\\USB\\LoadClients\\4884\\Default\\Default\\Usb_Kernel_Wrapper",
         L"Dll", drvPath);
-    PushEvent("B: registry written (Dll=%s)", winOk ? "WinCopy" : "SDPath");
+    PushEvent("B: registry written (Dll=%s r1=%d)", winOk ? "Good" : "SD", r1);
 
-    /* C. 加载用户库（从卡上只读加载） */
-    SetLine(1, "C: load ukw lib");
-    WCHAR src1[MAX_PATH];
-    _snwprintf(src1, MAX_PATH - 1, L"%s\\ceusbkwrapper.dll", dir);
-    HMODULE hLib = LoadLibraryW(src1);
-    if (!hLib) hLib = LoadLibraryW(L"ceusbkwrapper.dll");
-    if (!hLib) {
-        PushEvent("C: LoadLibrary FAILED err=%u", GetLastError());
-        SetLine(1, "C: LOAD FAILED");
-        goto finish;
+    /* C. ActivateDeviceEx 强制 USBD 加载驱动（关键步骤，v0.2 缺这个导致 err=87） */
+    SetLine(0, "C: ActivateDeviceEx");
+    {
+        HANDLE h = ActivateDeviceEx(L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", NULL, 0, 0);
+        DWORD e = GetLastError();
+        if (h == NULL || h == INVALID_HANDLE_VALUE) {
+            PushEvent("C: ActivateDeviceEx FAIL err=%u", e);
+        } else {
+            PushEvent("h = 0x%08X ok", (DWORD)h);
+            CloseHandle(h);  /* 释放句柄——驱动仍在 USBD 中加载 */
+            PushEvent("C: ActivateDeviceEx OK");
+        }
+    }
+    Sleep(500);  /* 给 USBD 一点时间完成驱动初始化 */
+
+    /* D. 加载用户库（卡上只读加载） */
+    HMODULE hLib = NULL;
+    {
+        WCHAR src1[MAX_PATH];
+        _snwprintf(src1, MAX_PATH - 1, L"%s\ceusbkwrapper.dll", dir);
+        hLib = LoadLibraryW(src1);
+        if (!hLib) hLib = LoadLibraryW(L"ceusbkwrapper.dll");
+        if (!hLib) {
+            PushEvent("D: LoadLibrary FAIL err=%u", GetLastError());
+            SetLine(1, "D: LOAD FAILED");
+            goto finish;
+        }
     }
     pOpen       = (PFN_Open)GetProcAddress(hLib, L"UkwOpenDriver");
     pGetDevList = (PFN_GetDevList)GetProcAddress(hLib, L"UkwGetDeviceList");
@@ -309,28 +316,29 @@ static DWORD WINAPI TestThread(LPVOID arg) {
     pGetDevDesc = (PFN_GetDevDesc)GetProcAddress(hLib, L"UkwGetDeviceDescriptor");
     pGetCfgDesc = (PFN_GetCfgDesc)GetProcAddress(hLib, L"UkwGetConfigDescriptor");
     pClaim      = (PFN_Claim)GetProcAddress(hLib, L"UkwClaimInterface");
-    pReleaseIface = (PFN_Release)GetProcAddress(hLib, L"UkwReleaseInterface");
+    pReleaseIface=(PFN_Release)GetProcAddress(hLib, L"UkwReleaseInterface");
     pCtrlXfer   = (PFN_CtrlXfer)GetProcAddress(hLib, L"UkwIssueControlTransfer");
     pClose      = (PFN_Close)GetProcAddress(hLib, L"UkwCloseDriver");
+    PushEvent("D: exports resolved (lib=0x%08X)", (DWORD)hLib);
     if (!pOpen || !pGetDevList || !pGetDevDesc || !pGetCfgDesc || !pCtrlXfer) {
-        PushEvent("C: missing Ukw exports");
-        SetLine(1, "C: missing exports");
+        PushEvent("D: missing exports");
+        SetLine(1, "D: missing exports");
         goto finish;
     }
-    PushEvent("C: Ukw exports resolved");
 
-    /* D. 打开驱动 */
+    /* E. UkwOpenDriver（v0.2 失败的步骤，现在 ActivateDeviceEx 之后） */
     HANDLE hDrv = pOpen();
+    DWORD oe = GetLastError();
     if (!hDrv || hDrv == INVALID_HANDLE_VALUE) {
-        PushEvent("UKW_STACK: UkwOpenDriver FAILED err=%u", GetLastError());
-        SetLine(1, "D: UKW open FAILED");
+        PushEvent("E: UkwOpenDriver FAIL err=%u (hDrv=%d)", oe, (DWORD)(DWORD_PTR)hDrv);
+        SetLine(1, "E: UKW OPEN FAIL err=%u", oe);
         goto finish;
     }
-    PushEvent("UKW_STACK: UkwOpenDriver OK");
-    SetLine(1, "D: UKW STACK OK");
+    PushEvent("E: UkwOpenDriver OK h=0x%08X", (DWORD)hDrv);
+    SetLine(1, "E: UKW STACK OK");
 
-    /* E. 轮询设备 180s */
-    SetLine(2, "E: PLUG IPHONE NOW!");
+    /* F. 轮询 + 枚举 iPhone */
+    SetLine(2, "F: PLUG IPHONE NOW");
     BOOL sawApple = FALSE, ctrlOK = FALSE, claimOK = FALSE;
     UKW_DEVICE seen[16];
     DWORD seenN = 0;
@@ -356,7 +364,7 @@ static DWORD WINAPI TestThread(LPVOID arg) {
 
                 if (d.idVendor == 0x05AC) {
                     sawApple = TRUE;
-                    SetLine(3, "E: APPLE %04X", d.idProduct);
+                    SetLine(3, "F: APPLE %04X", d.idProduct);
                     if (ReadStringDesc(list[i], d.iProduct)) ctrlOK = TRUE;
                     ReadStringDesc(list[i], d.iSerialNumber);
                     if (pClaim && pReleaseIface) {
@@ -374,12 +382,12 @@ static DWORD WINAPI TestThread(LPVOID arg) {
         }
         if (sawApple && (ctrlOK || round > 20)) break;
         Sleep(2000);
-        if (round % 5 == 4) SetLine(2, "E: waiting %ds...", (round + 1) * 2);
+        if (round % 5 == 4) SetLine(2, "F: waiting %ds...", (round + 1) * 2);
     }
 
-    PushEvent("DEVICE_ENUM: %s", sawApple ? "Apple seen" : "no Apple (check cable/port)");
-    PushEvent("CTRL_XFER : %s", ctrlOK ? "control transfer OK" : "failed");
-    PushEvent("CLAIM     : %s", claimOK ? "iface claim OK" : "failed");
+    PushEvent("DEVICE_ENUM: %s", sawApple ? "Apple seen" : "no Apple");
+    PushEvent("CTRL_XFER : %s", ctrlOK ? "OK" : "failed");
+    PushEvent("CLAIM     : %s", claimOK ? "OK" : "failed");
     SetLine(2, "ENUM:%s XFER:%s", sawApple ? "YES" : "NO", ctrlOK ? "YES" : "NO");
     SetLine(3, "CLAIM:%s  tap=exit", claimOK ? "YES" : "NO");
     pClose(hDrv);
@@ -404,11 +412,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmd, int nShow) {
     int sh = GetSystemMetrics(SM_CYSCREEN);
 
     InitializeCriticalSection(&g_cs);
-    SetLine(0, "usbtest v0.2 (zero-write) starting...");
-    SetLine(1, "deploys UKW driver + binds Apple VID");
+    SetLine(0, "usbtest v0.3 (activate) starting...");
+    SetLine(1, "deploys UKW + binds Apple VID");
     SetLine(2, "then: PLUG IPHONE");
 
-    g_hwnd = CreateWindowW(WC_USBTEST, L"usbtest v0.2", WS_VISIBLE | WS_CAPTION,
+    g_hwnd = CreateWindowW(WC_USBTEST, L"usbtest v0.3", WS_VISIBLE | WS_CAPTION,
                            0, 0, sw, sh, NULL, NULL, hInst, NULL);
     ShowWindow(g_hwnd, SW_SHOW);
     UpdateWindow(g_hwnd);
