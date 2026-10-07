@@ -22,11 +22,21 @@ jobs:
       - name: Build and test
         shell: powershell
         run: |
-          $gpp = (Get-ChildItem -Recurse 'C:\Program Files\LLVM-MinGW\bin' -Filter 'g++.exe' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-          if (-not $gpp) { $gpp = (Get-ChildItem -Recurse 'C:\Program Files\LLVM-MinGW' -Filter 'g++.exe' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName }
+          $gpp = $null
+          $candidates = @(
+            'C:\Program Files\LLVM-MinGW\bin\g++.exe',
+            'C:\Program Files (x86)\LLVM-MinGW\bin\g++.exe',
+            'C:\mingw64\bin\g++.exe',
+            'C:\msys64\mingw64\bin\g++.exe',
+            'C:\msys64\ucrt64\bin\g++.exe'
+          )
+          foreach ($c in $candidates) { if (Test-Path $c) { $gpp = $c; break } }
+          if (-not $gpp) {
+            # Recursive fallback (limited depth)
+            $gpp = (Get-ChildItem 'C:\Program Files','C:\Program Files (x86)' -Recurse -Depth 6 -Filter 'g++.exe' -ErrorAction SilentlyContinue -ErrorAction Stop 2>&1 | Select-Object -First 1 -ErrorAction SilentlyContinue).FullName
+          }
           if (-not $gpp) { Write-Error "g++ not found"; exit 1 }
           Write-Host "g++: $gpp"
-          # Add LLVM-MinGW bin to PATH for runtime + write the cmd.exe string
           $env:PATH = (Split-Path $gpp) + ';' + $env:PATH
           $args = '-std=c++17 -O2 -g -Wall -Iclient/include -Iclient/cpp client/cpp/protocol/aes_sbox_data.cpp client/cpp/protocol/connection.cpp client/test/test_protocol.cpp -o build/test.exe'
           $cmd = ('"' + $gpp + '" ' + $args)
