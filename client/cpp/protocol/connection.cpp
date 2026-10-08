@@ -15,7 +15,7 @@ void Connection::start() {
     transport_->setErrorCallback([this](int err) {
         // Surface as state ERROR + fire on_state (best-effort).
         {
-            std::lock_guard<std::mutex> lock(mtx_);
+            std::lock_guard<Mutex> lock(mtx_);
             state_ = ConnState::ERROR_STATE;
         }
         if (cbs_.on_state) cbs_.on_state(ConnState::ERROR_STATE);
@@ -26,7 +26,7 @@ void Connection::start() {
     // OPEN message: payload can be empty to probe basic; real impl carries
     // host info (FastCarPlay sends 0x88 byte setup blob).
     {
-        std::lock_guard<std::mutex> lock(mtx_);
+        std::lock_guard<Mutex> lock(mtx_);
         state_ = ConnState::NO_DEVICE;
     }
     send(Cmd::OPEN);
@@ -37,7 +37,7 @@ void Connection::start() {
 void Connection::stop() {
     if (transport_) transport_->close();
     {
-        std::lock_guard<std::mutex> lock(mtx_);
+        std::lock_guard<Mutex> lock(mtx_);
         state_ = ConnState::UNKNOWN;
     }
 }
@@ -100,7 +100,7 @@ void Connection::dispatch(const Message &msg) {
     case Cmd::PLUGGED:
         if (cbs_.on_plugged) cbs_.on_plugged();
         {
-            std::lock_guard<std::mutex> lock(mtx_);
+            std::lock_guard<Mutex> lock(mtx_);
             state_ = ConnState::ONLINE;
         }
         if (cbs_.on_state) cbs_.on_state(ConnState::ONLINE);
@@ -108,7 +108,7 @@ void Connection::dispatch(const Message &msg) {
     case Cmd::UNPLUGGED:
         if (cbs_.on_unplugged) cbs_.on_unplugged();
         {
-            std::lock_guard<std::mutex> lock(mtx_);
+            std::lock_guard<Mutex> lock(mtx_);
             state_ = ConnState::ONLINE;
         }
         if (cbs_.on_state) cbs_.on_state(ConnState::ONLINE);
@@ -120,7 +120,7 @@ void Connection::dispatch(const Message &msg) {
                                    ? static_cast<ConnState>(s)
                                    : ConnState::UNKNOWN;
             {
-                std::lock_guard<std::mutex> lock(mtx_);
+                std::lock_guard<Mutex> lock(mtx_);
                 state_ = new_state;
             }
             cbs_.on_state(new_state);

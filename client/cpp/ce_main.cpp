@@ -190,3 +190,4 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
     if (ct) { WaitForSingleObject(ct, 3000); CloseHandle(ct); }
     return 0;
 }
+#endif // _WIN32_WCE / __MINGW32CE__
