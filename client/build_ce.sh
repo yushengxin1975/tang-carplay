@@ -25,6 +25,7 @@ SRC=(
   client/cpp/protocol/aes_sbox_data.cpp
   client/cpp/protocol/connection.cpp
   client/cpp/protocol/usb_transport.cpp
+  client/cpp/ce_stubs.cpp
   client/cpp/ce_main.cpp
 )
 

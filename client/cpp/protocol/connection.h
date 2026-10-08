@@ -14,10 +14,10 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <stdexcept>
 #include <vector>
 
+#include "ce_compat.h"
 #include "aes_cipher.h"
 #include "message.h"
 #include "protocol_const.h"
@@ -70,7 +70,9 @@ public:
 
     // State state from probe (Box status query).
     ConnState state() const {
-        std::lock_guard<std::mutex> lock(mtx_);
+        // LockGuard resolves to std::lock_guard<std::mutex> on PC, custom
+    // RAII wrapper on CE (no std::mutex). Unqualified to avoid std lookup.
+    LockGuard lock(mtx_);
         return state_;
     }
 
@@ -86,7 +88,7 @@ private:
     bool cipher_enabled_ = false;
     InboundCallbacks cbs_;
     ConnState state_ = ConnState::INITIALISING;
-    mutable std::mutex mtx_;
+    mutable Mutex mtx_;
 };
 
 } // namespace carlinkit
