@@ -3,7 +3,7 @@
 #include "protocol/message.h"
 #include "protocol/aes_cipher.h"
 #include "protocol/connection.h"
-#include "protocol/protocol_const.h"
+#include "protocol_const.h"
 #include "fake_transport.h"
 
 #include <cstdio>
