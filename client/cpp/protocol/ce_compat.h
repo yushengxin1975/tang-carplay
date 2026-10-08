@@ -1,25 +1,22 @@
-// ce_compat.h — WinCE / desktop compatibility shims.
-//
-// CeGCC 9.3's libstdc++ lacks:
-//   - std::mutex (no gthreads in wince-thread-model runtime)
-//   - atoll() in <cstdlib>
-// Windows desktop is fine.
-//
-// All shims are no-ops or native-equivalent on desktop.
 #pragma once
 
-#ifdef _WIN32_WCE
+// CeGCC 9.3's libstdc++ lacks:
+//   - std::mutex (no gthreads in wince-thread-model runtime)
+//   - atoll() in <cstdlib> (declared but never defined)
+// Windows desktop is fine.
+
+#if defined(__MINGW32CE__) || defined(_WIN32_WCE)
+#  define CARLINKIT_PLATFORM_CE 1
 #  include <windows.h>
 #  include <string>
-#  define CARLINKIT_NO_ATOLL 1
 #else
+#  define CARLINKIT_PLATFORM_CE 0
 #  include <mutex>
-#  define CARLINKIT_NO_ATOLL 0
 #endif
 
 namespace carlinkit {
 
-#ifdef _WIN32_WCE
+#if CARLINKIT_PLATFORM_CE
 class Mutex {
     CRITICAL_SECTION cs_;
 public:

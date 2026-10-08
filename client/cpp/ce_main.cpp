@@ -6,7 +6,7 @@
 //
 // 编译：CeGCC 9.3 (arm-mingw32ce-g++)  -std=c++17 -static-libstdc++
 //
-// CE-only: wrap whole TU in #ifdef _WIN32_WCE so PC builds see an empty TU.
+// CE-only: wrap whole TU in #ifdef (__MINGW32CE__) || defined(_WIN32_WCE) so PC builds see an empty TU.
 
 #include "ce_main.h"
 
@@ -17,7 +17,7 @@
 #include <vector>
 
 // ---------------- GUI (zero-persistence) ----------------
-#ifdef _WIN32_WCE
+#ifdef (__MINGW32CE__) || defined(_WIN32_WCE)
 static HWND g_hwnd = nullptr;
 static volatile BOOL g_running = TRUE;
 static volatile BOOL g_done = FALSE;

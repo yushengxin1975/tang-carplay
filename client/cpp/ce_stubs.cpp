@@ -3,7 +3,7 @@
 // CeGCC 9.3's libstdc++ declares atoll() in <cstdlib> header but never
 // links a definition unless -D_GLIBCXX_USE_C99=1 is passed. Provide a
 // trivial stub to keep the build happy. (We don't use atoll().)
-#ifdef _WIN32_WCE
+#ifdef (__MINGW32CE__) || defined(_WIN32_WCE)
 extern "C" long long atoll(const char *nptr) {
     (void)nptr;
     return 0;
