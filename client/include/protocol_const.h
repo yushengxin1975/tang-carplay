@@ -1,4 +1,10 @@
 #pragma once
+// Carlinkit protocol constants - FIPS-197 + FastCarPlay-derived.
+// Wrapped in namespace carlinkit so callers can use carlinkit::Cmd etc.
+
+namespace carlinkit {
+
+#pragma once
 // Carlinkit CPC2000/CP2A protocol constants
 // Sourced from niellun/FastCarPlay (C++) + AutoKit_WinCE reverse
 #ifndef CARLINKIT_PROTOCOL_CONST_H
@@ -77,3 +83,4 @@ constexpr uint8_t EP_IN_BULK   = 0x81;   // Box -> PC
 constexpr uint8_t EP_IN_INT     = 0x83;   // Box -> PC, interrupt (heartbeat)
 
 #endif // CARLINKIT_PROTOCOL_CONST_H
+} // namespace carlinkit
