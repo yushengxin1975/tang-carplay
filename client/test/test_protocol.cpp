@@ -113,10 +113,10 @@ static void on_u() { s_unplugged++; }
 
 static void makeMsg(std::vector<uint8_t> &out, Cmd type) {
     out.assign(16, 0);
-    *reinterpret_cast<uint32_t*>(out.data()) = MAGIC;
-    *reinterpret_cast<int32_t *>(out.data() + 4) = 0;
-    *reinterpret_cast<uint32_t *>(out.data() + 8) = static_cast<uint32_t>(type);
-    *reinterpret_cast<uint32_t *>(out.data() + 12) = ~static_cast<uint32_t>(type);
+    Message::write_u32_le(out.data(), MAGIC);
+    Message::write_u32_le(out.data() + 4, 0);
+    Message::write_u32_le(out.data() + 8, static_cast<uint32_t>(type));
+    Message::write_u32_le(out.data() + 12, ~static_cast<uint32_t>(type));
 }
 
 static void test_lifecycle() {
@@ -158,7 +158,7 @@ static void test_lifecycle() {
         EXPECT(ft.sent().size() - before == 16, "heartbeat replied with 16-byte empty msg");
         // Verify the reply is HEARTBEAT type (bytes 8-11 little-endian)
         if (ft.sent().size() >= before + 12) {
-            uint32_t rpl_type = *reinterpret_cast<uint32_t *>(ft.sent().data() + before + 8);
+            uint32_t rpl_type = Message::read_u32_le(ft.sent().data() + before + 8);
             EXPECT(rpl_type == static_cast<uint32_t>(Cmd::HEARTBEAT),
                    "reply type == HEARTBEAT");
         }
