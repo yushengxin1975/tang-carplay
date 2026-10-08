@@ -132,40 +132,39 @@ static void test_lifecycle() {
     // Trick: instantiate FakeTransport directly, take its address, pass
     // &as UsbTransport*. Connection stores the ptr; lifetime is OK because
     // FakeTransport outlives the Connection in this scope.
-    FakeTransport ft;
+    // Connection owns the transport via unique_ptr, so allocate on heap.
+    auto owned = std::make_unique<FakeTransport>();
+    FakeTransport *ftp = owned.get();
     {
-        InboundCallbacks cb2 = cb;
-        std::unique_ptr<UsbTransport> up(reinterpret_cast<UsbTransport *>(&ft));
-        Connection conn(std::move(up), cb2);
+        std::unique_ptr<UsbTransport> up(std::move(owned)); // derived->base ok
+        Connection conn(std::move(up), cb);
         conn.start();
         EXPECT(conn.state() == ConnState::NO_DEVICE, "after start: NO_DEVICE");
 
         // CMD_PLUGGED
         std::vector<uint8_t> b; makeMsg(b, Cmd::PLUGGED);
-        ft.deliver(b);
+        ftp->deliver(b);
         EXPECT(s_plugged == 1, "PLUGGED fired");
         EXPECT(s_last_state == ConnState::ONLINE, "state -> ONLINE");
 
         // CMD_UNPLUGGED
         makeMsg(b, Cmd::UNPLUGGED);
-        ft.deliver(b);
+        ftp->deliver(b);
         EXPECT(s_unplugged == 1, "UNPLUGGED fired");
 
         // HEARTBEAT -> auto reply (16 bytes more sent)
-        size_t before = ft.sent().size();
+        size_t before = ftp->sent().size();
         makeMsg(b, Cmd::HEARTBEAT);
-        ft.deliver(b);
-        EXPECT(ft.sent().size() - before == 16, "heartbeat replied with 16-byte empty msg");
+        ftp->deliver(b);
+        EXPECT(ftp->sent().size() - before == 16, "heartbeat replied with 16-byte empty msg");
         // Verify the reply is HEARTBEAT type (bytes 8-11 little-endian)
-        if (ft.sent().size() >= before + 12) {
-            uint32_t rpl_type = Message::read_u32_le(ft.sent().data() + before + 8);
+        if (ftp->sent().size() >= before + 12) {
+            uint32_t rpl_type = Message::read_u32_le(ftp->sent().data() + before + 8);
             EXPECT(rpl_type == static_cast<uint32_t>(Cmd::HEARTBEAT),
                    "reply type == HEARTBEAT");
         }
+        conn.stop();
     }
-    // Connection destructs first, FakeTransport still alive in scope
-    EXPECT(!ft.is_open(), "after scope: ft.is_open()? (auto close via dtor?)");
-    // FakeTransport.close() was called by Connection.stop() (in dtor via close()? - we rely on Connection.stop())
 }
 
 int main() {
