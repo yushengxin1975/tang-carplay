@@ -22,6 +22,9 @@ namespace carlinkit {
 struct UsbTransport_CE::Impl {
     HMODULE lib = nullptr;
     HANDLE drv = INVALID_HANDLE_VALUE;
+    HANDLE reader_thread = nullptr;     // background bulk-IN loop
+    volatile LONG reader_running = 0;    // 1=keep reading, 0=stop
+    RecvCallback recv;
 
     // UKW function pointers (resolved from ceusbkwrapper.dll)
     HANDLE (*Open)(void) = nullptr;
@@ -36,7 +39,6 @@ struct UsbTransport_CE::Impl {
     void  (*Close)(HANDLE) = nullptr;
 
     void *dev = nullptr;          // UKW_DEVICE for the Carlinkit box
-    RecvCallback recv;
 };
 
 UsbTransport_CE::UsbTransport_CE() : impl_(new Impl) {}
@@ -124,11 +126,34 @@ bool UsbTransport_CE::claim() {
     return true;
 }
 
-void UsbTransport_CE::submitRead(std::size_t /*buf_size*/, RecvCallback cb) {
-    // CE has no async callback plumbing in this wrapper; the client main
-    // loop polls via a reader thread calling bulkRead(). Store the callback
-    // for the future async layer.
+void UsbTransport_CE::submitRead(std::size_t buf_size, RecvCallback cb) {
+    if (impl_->reader_thread) return;  // already running
+    if (!impl_->BulkXfer || !impl_->dev) return;
     impl_->recv = std::move(cb);
+    InterlockedExchange(&impl_->reader_running, 1);
+
+    // Copy the bits we need into the thread (avoids capturing `this` by ref
+    // in a raw function pointer threadproc).
+    Impl *snap = impl_;
+    impl_->reader_thread = CreateThread(nullptr, 256 * 1024,
+        [](LPVOID arg) -> DWORD {
+            Impl *im = static_cast<Impl *>(arg);
+            std::vector<uint8_t> buf(im->recv ? 64 * 1024 : 4096);
+            while (InterlockedCompareExchange(&im->reader_running, 1, 1) == 1) {
+                DWORD rx = 0;
+                BOOL ok = im->BulkXfer(im->dev, /*flags=*/1 /*IN*/,
+                                       0x81 /*bulk IN endpoint*/,
+                                       buf.data(),
+                                       static_cast<DWORD>(buf.size()),
+                                       &rx, nullptr /*blocking*/);
+                if (ok && rx > 0 && im->recv) {
+                    im->recv(buf.data(), rx);
+                } else if (!ok) {
+                    Sleep(50);  // back off on error
+                }
+            }
+            return 0;
+        }, snap, STACK_SIZE_PARAM_IS_A_RESERVATION, CREATE_RUNNING);
 }
 
 void UsbTransport_CE::write(const uint8_t *data, std::size_t len) {
@@ -140,6 +165,13 @@ void UsbTransport_CE::write(const uint8_t *data, std::size_t len) {
 }
 
 void UsbTransport_CE::close() {
+    // Stop the background reader first so it doesn't touch a dead handle.
+    if (impl_->reader_thread) {
+        InterlockedExchange(&impl_->reader_running, 0);
+        WaitForSingleObject(impl_->reader_thread, 3000);
+        CloseHandle(impl_->reader_thread);
+        impl_->reader_thread = nullptr;
+    }
     if (impl_->dev && impl_->Release) impl_->Release(impl_->dev, 0);
     impl_->dev = nullptr;
     if (impl_->drv != INVALID_HANDLE_VALUE && impl_->Close) {

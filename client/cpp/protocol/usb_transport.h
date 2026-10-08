@@ -47,12 +47,14 @@ public:
     virtual bool claim() = 0;
 
     // Submit a bulk read. RecvCallback fires when data arrives.
+    // CE implementation starts a background reader thread.
+    // PC stub stores the callback for a future async layer.
     virtual void submitRead(std::size_t buf_size, RecvCallback cb) = 0;
 
     // Write a packet (header + payload) over bulk OUT.
     virtual void write(const uint8_t *data, std::size_t len) = 0;
 
-    // Cleanup endpoints and close device.
+    // Cleanup endpoints and close device. Stops any background readers.
     virtual void close() = 0;
 
     // Optional: set error callback. Default: ignored.

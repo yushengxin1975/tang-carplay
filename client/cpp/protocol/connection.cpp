@@ -63,21 +63,33 @@ void Connection::send(Cmd cmd, const std::vector<uint8_t> &payload) {
 
 void Connection::onRecv(const uint8_t *data, std::size_t len) {
     if (!data || len < 16) return;
-    Message msg = Message::parse(data, len);
-    // Decrypt payload if encrypted.
-    if (msg.encrypted()) {
-        if (msg.payload_size() == 0 || msg.payload_size() % 16 != 0) {
-            throw std::runtime_error("Connection::onRecv: bad encrypted length");
+    // A single bulk read may contain multiple frames back-to-back.
+    std::size_t off = 0;
+    while (off + sizeof(Header) <= len) {
+        Header h;
+        std::memcpy(&h, data + off, sizeof(Header));
+        if (h.magic != MAGIC && h.magic != MAGIC_ENC)
+            break;  // lost sync; drop the rest of this read
+        if (h.length < 0)
+            break;
+        std::size_t frame = sizeof(Header) + static_cast<std::size_t>(h.length);
+        if (off + frame > len)
+            break;  // incomplete tail; dropped (no cross-read buffering yet)
+
+        Message msg = Message::parse(data + off, frame);
+        if (msg.encrypted()) {
+            if (msg.payload_size() == 0 || msg.payload_size() % 16 != 0)
+                break;  // malformed encrypted length; drop rest
+            std::vector<uint8_t> plain(msg.payload_size());
+            char err[128];
+            if (!cipher_.decrypt(msg.payload(), msg.payload_size(), plain.data(), err))
+                break;
+            msg = Message(msg.type(), false,
+                          static_cast<int32_t>(plain.size()), plain.data());
         }
-        std::vector<uint8_t> plain(msg.payload_size());
-        char err[128];
-        if (!cipher_.decrypt(msg.payload(), msg.payload_size(), plain.data(), err)) {
-            throw std::runtime_error(std::string("Connection::onRecv decrypt: ") + err);
-        }
-        // Rebuild message with plain payload but keep header state.
-        msg = Message(msg.type(), false, static_cast<int32_t>(plain.size()), plain.data());
+        dispatch(msg);
+        off += frame;
     }
-    dispatch(msg);
 }
 
 void Connection::dispatch(const Message &msg) {

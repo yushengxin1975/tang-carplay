@@ -28,3 +28,15 @@ jobs:
             usbwatch/usbwatch.exe
             bench/bench.exe
             usbtest/usbtest.exe
+
+      - name: Build Carlinkit client for WinCE (Phase B.1 CE bring-up)
+        run: |
+          export CEGCC_BIN=/opt/cegcc-arm/bin
+          chmod +x client/build_ce.sh
+          client/build_ce.sh
+
+      - name: Upload Carlinkit client artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tang-carplay-ce-client
+          path: client/carlinkit_ce.exe
