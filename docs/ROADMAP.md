@@ -2,14 +2,37 @@
 
 为比亚迪唐 2015 旗舰版（MT3360/WinCE 6.0）打造**自主 Carlinkit 客户端**。取代当前依赖的 AutoKit WinCE 客户端。
 
-## 项目状态（2026-10-07 收尾）
+## 项目状态（2026-10-08 更新）
 
 | 轨道 | 状态 | 备注 |
 |---|---|---|
 | 软硬件档案（MT3360/ARM1176/Mali/OMX） | ✅ 完成 | docs/HARDWARE.md |
 | patched AutoKit 临时可用版本 | ✅ 验证可用 | 仅作过渡，卡上有副本 |
 | 直连 iPhone 路线 | ❌ 失败 | BYD OEM 限制 USB 客户端驱动注册路径 |
-| **Carlinkit 客户端重写（本路线）** | 🔄 启动 | 本文件 |
+| **Carlinkit 客户端重写（本路线）** | 🔄 B.1 进行中 | 本文件 |
+
+## Phase B.1 进度明细
+
+- [x] 协议层骨架（message.h / protocol_const.h / connection / usb_transport 抽象）
+- [x] AES-128-CBC：**程序生成 sbox（NIST 验证）+ FIPS-197 标准结构重写**
+- [x] 单元测试 23 项 **双平台（ubuntu+windows CI）全过**，含 **NIST FIPS-197 C.1 KAT**
+- [x] CI 修通：`.github/workflows/pc-unit-tests.yml`（matrix, apt/choco g++），每次 push 自动回归
+- [x] UsbTransport_CE 实现（Ukw* 动态绑定，复用 usbtest v0.6 车上验证过的模式）
+- [x] UsbTransport_PC stub（占位，后续接 libusb-1.0）
+- [ ] CE 端编译（CeGCC 编译 usb_transport.cpp 的 _WIN32_WCE 分支——需要扩展 tools/build_all.sh）
+- [ ] UsbTransport_PC 真实实现（libusb-1.0，PC 连盒子调试用）
+- [ ] 媒体层（OMX H.264 / fdk-aac / DirectDraw / WaveOut / TouchPanel）
+- [ ] CE GUI 入口（startup.exe 兼容，零写卡）
+- [ ] 上车集成测试（M2）
+
+### CI 修通过程抓出的真实 bug（测试的价值实证）
+
+1. 手打 sbox 表错行（26 个值/重复行）→ 改为程序生成
+2. decrypt 逆 ShiftRows 链式赋值逻辑错误 + t 未声明
+3. encrypt 的 MixColumns 根本不是 GF(2^8) 矩阵乘法（自审未发现）→ FIPS-197 重写
+4. unique_ptr delete 栈对象 → double free（CE 上将是随机崩溃）
+5. const 成员函数锁非 mutable mutex → 编译失败
+6. include 路径不一致 → 统一为 -Iclient/include + -Iclient/cpp 相对式
 
 ## 已知 AutoKit 缺陷（要修掉的）
 
