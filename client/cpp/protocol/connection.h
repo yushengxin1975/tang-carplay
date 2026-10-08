@@ -86,7 +86,7 @@ private:
     bool cipher_enabled_ = false;
     InboundCallbacks cbs_;
     ConnState state_ = ConnState::INITIALISING;
-    std::mutex mtx_;
+    mutable std::mutex mtx_;
 };
 
 } // namespace carlinkit

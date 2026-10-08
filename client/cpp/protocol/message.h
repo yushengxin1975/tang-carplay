@@ -110,18 +110,18 @@ public:
             throw std::runtime_error("Message: buffer too small");
         Message m;
         std::memcpy(&m.hdr_, buf, sizeof(Header));
-        if (hdr_magic() != MAGIC && hdr_magic() != MAGIC_ENC)
+        if (m.hdr_.magic != MAGIC && m.hdr_.magic != MAGIC_ENC)
             throw std::runtime_error("Message: bad magic");
         if (m.hdr_.length < 0)
             throw std::runtime_error("Message: negative length");
-        if (sizeof(Header) + m.hdr_.length > n)
+        if (m.hdr_.typecheck != ~m.hdr_.type)
+            throw std::runtime_error("Message: typecheck mismatch");
+        if (sizeof(Header) + static_cast<std::size_t>(m.hdr_.length) > n)
             throw std::runtime_error("Message: incomplete buffer");
         m.encrypted_ = (m.hdr_.magic == MAGIC_ENC);
         m.payload_.assign(buf + sizeof(Header), buf + sizeof(Header) + m.hdr_.length);
         return m;
     }
-
-    static uint32_t hdr_magic() { return MAGIC; }
 
 private:
     Header hdr_;

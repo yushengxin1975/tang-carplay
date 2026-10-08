@@ -1,7 +1,7 @@
 #pragma once
 // In-memory transport for unit tests. Records sends, replays scripted
 // inbound bytes, no USB / OS code.
-#include "client/cpp/protocol/usb_transport.h"
+#include "protocol/usb_transport.h"
 
 #include <stdexcept>
 #include <vector>

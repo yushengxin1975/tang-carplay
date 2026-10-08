@@ -1,10 +1,10 @@
 // Unit tests for Phase B.1 protocol layer.
 // Build via top-level Makefile (make run).
-#include "client/cpp/protocol/message.h"
-#include "client/cpp/protocol/aes_cipher.h"
-#include "client/cpp/protocol/connection.h"
-#include "client/cpp/protocol/protocol_const.h"
-#include "client/test/fake_transport.h"
+#include "protocol/message.h"
+#include "protocol/aes_cipher.h"
+#include "protocol/connection.h"
+#include "protocol/protocol_const.h"
+#include "fake_transport.h"
 
 #include <cstdio>
 #include <cstring>
@@ -37,6 +37,27 @@ static void test_aes_roundtrip() {
     EXPECT(c.decrypt(ct, 32, rt), "AES decrypt ok");
     EXPECT(std::memcmp(rt, pt, 32) == 0, "roundtrip plaintext matches");
     EXPECT(std::memcmp(ct, pt, 32) != 0, "ciphertext differs from plaintext");
+}
+
+// --- 1b. NIST FIPS-197 Appendix C.1 known-answer test ---
+// key=000102...0f, PT=00112233...ff, CT=69c4e0d86a7b0430d8cdb78070b4c55a
+// (CBC with zero IV: first block == ECB vector)
+static void test_aes_nist_kat() {
+    std::printf("[test_aes_nist_kat]\n");
+    const uint8_t key[16] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+                             0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f};
+    const uint8_t pt[16]  = {0x00,0x11,0x22,0x33,0x44,0x55,0x66,0x77,
+                             0x88,0x99,0xaa,0xbb,0xcc,0xdd,0xee,0xff};
+    const uint8_t want[16]= {0x69,0xc4,0xe0,0xd8,0x6a,0x7b,0x04,0x30,
+                             0xd8,0xcd,0xb7,0x80,0x70,0xb4,0xc5,0x5a};
+    const uint8_t iv0[16] = {0};
+    uint8_t ct[16], rt[16];
+    AESCipher c;
+    c.init(key, iv0);
+    EXPECT(c.encrypt(pt, 16, ct), "NIST: encrypt runs");
+    EXPECT(std::memcmp(ct, want, 16) == 0, "NIST C.1 ciphertext matches KAT");
+    EXPECT(c.decrypt(ct, 16, rt), "NIST: decrypt runs");
+    EXPECT(std::memcmp(rt, pt, 16) == 0, "NIST C.1 decrypt returns plaintext");
 }
 
 // --- 2. Message serialize / parse roundtrip (plain) ---
@@ -150,6 +171,7 @@ static void test_lifecycle() {
 int main() {
     std::printf("=== Carlinkit protocol unit tests ===\n");
     test_aes_roundtrip();
+    test_aes_nist_kat();
     test_message_roundtrip();
     test_message_encrypted();
     test_lifecycle();
