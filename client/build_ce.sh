@@ -18,7 +18,8 @@ cd "$REPO_ROOT"
 
 CXX="$CC"
 CXXFLAGS=(-std=c++17 -O2 -Wall -Wno-unused-parameter -Wno-unused-variable
-          -D_GLIBCXX_USE_C99=0)
+          -D_GLIBCXX_USE_C99=0
+          -include client/cpp/protocol/ce_atoll_patch.h)
 INC=(-I"$REPO_ROOT/client/include" -I"$REPO_ROOT/client/cpp")
 
 # A single TU: only define _WIN32_WCE; ce_main.cpp wraps whole body in #ifdef.

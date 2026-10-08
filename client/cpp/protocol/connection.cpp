@@ -16,9 +16,9 @@ void Connection::start() {
         // Surface as state ERROR + fire on_state (best-effort).
         {
             std::lock_guard<std::mutex> lock(mtx_);
-            state_ = ConnState::ERROR;
+            state_ = ConnState::ERROR_STATE;
         }
-        if (cbs_.on_state) cbs_.on_state(ConnState::ERROR);
+        if (cbs_.on_state) cbs_.on_state(ConnState::ERROR_STATE);
     });
     transport_->submitRead(64 * 1024, [this](const uint8_t *d, std::size_t n) {
         onRecv(d, n);

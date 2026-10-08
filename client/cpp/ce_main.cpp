@@ -115,7 +115,7 @@ static DWORD WINAPI ClientThread(LPVOID) {
         PushEvent("STATE: %d", (int)s);
         if (s == ConnState::NO_DEVICE) SetLine(1, "WAIT: plug iPhone to box");
         else if (s == ConnState::ONLINE) SetLine(1, "iPHONE PLUGGED (box online)");
-        else if (s == ConnState::ERROR) SetLine(1, "STATE=ERR (see log)");
+        else if (s == ConnState::ERROR_STATE) SetLine(1, "STATE=ERR (see log)");
     };
     cb.on_plugged = [](){ PushEvent("CMD_PLUGGED received"); SetLine(2, "iPhone -> Box -> BYD"); };
     cb.on_unplugged = [](){ PushEvent("CMD_UNPLUGGED received"); SetLine(2, "iPhone disconnected"); };
