@@ -61,7 +61,7 @@ void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
 
 #define RESOLVE(field, name) \
     impl_->field = reinterpret_cast<decltype(impl_->field)>( \
-        GetProcAddress(impl_->lib, L##name)); \
+        GetProcAddressW(impl_->lib, L##name)); \
     if (!impl_->field) { \
         char msg[96]; \
         _snprintf(msg, 95, "CE: missing export %s", name); \
@@ -153,7 +153,7 @@ void UsbTransport_CE::submitRead(std::size_t buf_size, RecvCallback cb) {
                 }
             }
             return 0;
-        }, snap, STACK_SIZE_PARAM_IS_A_RESERVATION, CREATE_RUNNING);
+        }, snap, STACK_SIZE_PARAM_IS_A_RESERVATION, 0);
 }
 
 void UsbTransport_CE::write(const uint8_t *data, std::size_t len) {
