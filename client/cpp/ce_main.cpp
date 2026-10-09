@@ -91,7 +91,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_DESTROY: PostQuitMessage(0); return 0;
     }
-    return DefWindowProc(h, msg, wp, lp);
+    return DefWindowProcW(h, msg, wp, lp);
 }
 
 static carlinkit::Connection *g_conn = nullptr;
@@ -139,9 +139,9 @@ static DWORD WINAPI ClientThread(LPVOID) {
         HANDLE hbeat = CreateThread(nullptr, 256 * 1024, HeartbeatThread,
                                    nullptr, STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
         MSG m;
-        while (GetMessage(&m, nullptr, 0, 0) > 0) {
+        while (GetMessageW(&m, nullptr, 0, 0) > 0) {
             TranslateMessage(&m);
-            DispatchMessage(&m);
+            DispatchMessageW(&m);
         }
         InterlockedExchange((LONG *)&g_running, 0);
         WaitForSingleObject(hbeat, 2000);
@@ -182,9 +182,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
     HANDLE ct = CreateThread(nullptr, 256 * 1024, ClientThread, nullptr,
                              STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
     MSG m;
-    while (GetMessage(&m, nullptr, 0, 0) > 0) {
+    while (GetMessageW(&m, nullptr, 0, 0) > 0) {
         TranslateMessage(&m);
-        DispatchMessage(&m);
+        DispatchMessageW(&m);
     }
     InterlockedExchange((LONG *)&g_running, 0);
     if (ct) { WaitForSingleObject(ct, 3000); CloseHandle(ct); }

@@ -13,7 +13,7 @@
 
 #include <cstring>
 
-#ifdef _WIN32_WCE   // ---------------- CE implementation ----------------
+#if defined(__MINGW32CE__) || defined(_WIN32_WCE)   // ---------------- CE implementation ----------------
 
 #include <windows.h>
 
