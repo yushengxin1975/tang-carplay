@@ -48,7 +48,7 @@ void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
     // 1. Load user-space UKW library from same dir as the exe
     WCHAR dir[MAX_PATH] = {0};
     WCHAR path[MAX_PATH] = {0};
-    if (GetModuleFileName(NULL, dir, MAX_PATH)) {
+    if (GetModuleFileNameW(NULL, dir, MAX_PATH)) {
         WCHAR *slash = wcsrchr(dir, L'\\');
         if (slash) *slash = 0;
         _snwprintf(path, MAX_PATH - 1, L"%s\\ceusbkwrapper.dll", dir);
