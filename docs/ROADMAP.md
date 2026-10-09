@@ -18,6 +18,7 @@
 - [x] 单元测试 23 项 **双平台（ubuntu+windows CI）全过**，含 **NIST FIPS-197 C.1 KAT**
 - [x] CI 修通：`.github/workflows/pc-unit-tests.yml`（matrix, apt/choco g++），每次 push 自动回归
 - [x] UsbTransport_CE 实现（Ukw* 动态绑定，复用 usbtest v0.6 车上验证过的模式）
+- [x] **CE 编译闭环**：carlinkit_ce.exe (ARM 80KB) 在 CI 产出，PC 测试未破（23/23）
 - [x] UsbTransport_PC stub（占位，后续接 libusb-1.0）
 - [ ] CE 端编译（CeGCC 编译 usb_transport.cpp 的 _WIN32_WCE 分支——需要扩展 tools/build_all.sh）
 - [ ] UsbTransport_PC 真实实现（libusb-1.0，PC 连盒子调试用）
