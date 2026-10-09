@@ -19,6 +19,10 @@
 
 #include "protocol_const.h"
 
+// Message/Header live at global scope (matches FastCarPlay layout);
+// pull the carlinkit constants (Cmd/MAGIC/MAGIC_ENC) into view.
+using namespace carlinkit;
+
 #ifdef _MSC_VER
 #pragma pack(push, 1)
 #endif
