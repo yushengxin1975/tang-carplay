@@ -35,12 +35,15 @@ struct UsbTransport_CE::Impl {
     void  (*Close)(HANDLE) = nullptr;
 
     void *dev = nullptr;
+    bool claimed = false;          // interface 0 claimed (idempotent claim)
 };
 
 UsbTransport_CE::UsbTransport_CE() : impl_(new Impl) {}
 UsbTransport_CE::~UsbTransport_CE() { close(); delete impl_; }
 
 void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
+    // Idempotent: caller may open() again via Connection::start().
+    if (impl_->dev) return;
     WCHAR dir[MAX_PATH] = {0}, path[MAX_PATH] = {0};
     if (GetModuleFileNameW(NULL, dir, MAX_PATH)) {
         WCHAR *slash = wcsrchr(dir, L'\\');
@@ -106,7 +109,13 @@ void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
 }
 
 bool UsbTransport_CE::claim() {
-    return impl_->dev && impl_->Claim(impl_->dev, 0);
+    if (!impl_->dev) return false;
+    if (impl_->claimed) return true;  // already claimed by us
+    if (impl_->Claim(impl_->dev, 0)) {
+        impl_->claimed = true;
+        return true;
+    }
+    return false;
 }
 
 void UsbTransport_CE::submitRead(std::size_t, RecvCallback cb) {
@@ -146,7 +155,8 @@ void UsbTransport_CE::close() {
         CloseHandle(impl_->reader_thread);
         impl_->reader_thread = nullptr;
     }
-    if (impl_->dev && impl_->Release) impl_->Release(impl_->dev, 0);
+    if (impl_->dev && impl_->Release && impl_->claimed) impl_->Release(impl_->dev, 0);
+    impl_->claimed = false;
     impl_->dev = nullptr;
     if (impl_->drv != INVALID_HANDLE_VALUE && impl_->Close) {
         impl_->Close(impl_->drv);
@@ -172,6 +182,7 @@ struct UsbTransport_PC::Impl {
     void *so = nullptr;
     void *ctx = nullptr;
     void *devh = nullptr;          // libusb_device_handle*
+    bool claimed = false;          // interface 0 claimed (idempotent claim)
     RecvCallback recv;
     volatile bool reader_running = false;
 
@@ -208,6 +219,10 @@ static void *load_sym(void *so, const char *name, char *err, size_t errlen) {
 }
 
 void UsbTransport_PC::open(uint16_t vid, uint16_t pid) {
+    // Idempotent: pc_main opens+claims, then Connection::start() calls
+    // open() again. Re-opening here would leak the first handle (its claim
+    // still held) and make the second claim_interface fail.
+    if (impl_->devh) return;
     char err[128] = {0};
 
 #ifdef _WIN32
@@ -278,6 +293,7 @@ void UsbTransport_PC::open(uint16_t vid, uint16_t pid) {
 
 bool UsbTransport_PC::claim() {
     if (!impl_->devh) return false;
+    if (impl_->claimed) return true;  // already claimed by us
 #ifdef __linux__
     if (impl_->kernel_driver_active(impl_->devh, 0) == 1)
         impl_->detach_kernel_driver(impl_->devh, 0);
@@ -285,7 +301,11 @@ bool UsbTransport_PC::claim() {
     if (impl_->set_configuration(impl_->devh, 1) != 0) {
         // Box may already be configured; ignore and try claim anyway
     }
-    return impl_->claim_interface(impl_->devh, 0) == 0;
+    if (impl_->claim_interface(impl_->devh, 0) == 0) {
+        impl_->claimed = true;
+        return true;
+    }
+    return false;
 }
 
 void UsbTransport_PC::submitRead(std::size_t, RecvCallback cb) {
@@ -304,7 +324,8 @@ void UsbTransport_PC::write(const uint8_t *data, std::size_t len) {
 
 void UsbTransport_PC::close() {
     if (impl_->devh) {
-        impl_->release_interface(impl_->devh, 0);
+        if (impl_->claimed) impl_->release_interface(impl_->devh, 0);
+        impl_->claimed = false;
         impl_->close_fn(impl_->devh);
         impl_->devh = nullptr;
     }
