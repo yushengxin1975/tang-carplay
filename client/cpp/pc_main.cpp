@@ -54,6 +54,9 @@ static const char *cmdName(uint32_t c) {
 
 int main() {
     std::signal(SIGINT, onSigint);
+    // Unbuffered stdout: when redirected to a file, printf output must
+    // land immediately or a killed process loses the whole log.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("=== Carlinkit PC client (protocol bring-up) ===\n");
 
     std::ofstream vout("sample_video.bin", std::ios::binary);
