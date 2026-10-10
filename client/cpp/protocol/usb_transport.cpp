@@ -347,7 +347,10 @@ bool UsbTransport_PC::readPump(int timeout_ms) {
         impl_->recv(buf, static_cast<std::size_t>(rx));
         return true;
     }
-    return rc == 0;  // timeout -> true (keep pumping), error -> false
+    // LIBUSB_ERROR_TIMEOUT (-7): no data in window -> keep pumping.
+    // LIBUSB_ERROR_OVERFLOW (-8): frame bigger than buffer -> keep pumping
+    // (data lost for this read, but the box is still there).
+    return (rc == 0 || rc == -7 || rc == -8);  // error -> false
 }
 
 } // namespace carlinkit
