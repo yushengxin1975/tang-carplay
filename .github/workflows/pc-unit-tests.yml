@@ -1,4 +1,4 @@
-name: Build PC unit tests
+name: Build PC unit tests + pc_main
 on:
   push:
     branches:
@@ -10,34 +10,30 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
-        include:
-          - os: ubuntu-latest
-            cxx: g++
-            cxxpkg: g++
-            cxxinstall: sudo apt-get update && sudo apt-get install -y g++
-          - os: windows-latest
-            cxx: g++.exe
-            cxxpkg: mingw-w64
-            cxxinstall: choco install mingw -y
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Install g++
         shell: bash
-        run: ${{ matrix.cxxinstall }}
-      - name: Build and test
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then choco install mingw -y || true
+          else sudo apt-get update && sudo apt-get install -y g++ libusb-1.0-0
+          fi
+      - name: Unit tests + pc_main
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
-            CXX="C:/ProgramData/chocolatey/bin/g++.exe"
+            CXX="C:/mingw64/bin/g++.exe"
             [ -f "$CXX" ] || CXX="C:/ProgramData/chocolatey/lib/mingw/tools/install/bin/g++.exe"
-            [ -f "$CXX" ] || CXX="C:/mingw64/bin/g++.exe"
             [ -f "$CXX" ] || CXX="C:/msys64/mingw64/bin/g++.exe"
+            [ -f "$CXX" ] || CXX="g++"
           else
             CXX="g++"
           fi
           echo "Using compiler: $CXX"
           mkdir -p build
+
+          # Unit tests
           "$CXX" -std=c++17 -O2 -g -Wall \
             -Iclient/include -Iclient/cpp \
             client/cpp/protocol/aes_sbox_data.cpp \
@@ -45,14 +41,24 @@ jobs:
             client/cpp/protocol/usb_transport.cpp \
             client/test/test_protocol.cpp \
             -o build/test.exe
-          ls -la build/
           ./build/test.exe | tee test.log
+
+          # PC main (protocol bring-up tool, dynamic libusb)
+          "$CXX" -std=c++17 -O2 -g -Wall \
+            -Iclient/include -Iclient/cpp \
+            client/cpp/protocol/aes_sbox_data.cpp \
+            client/cpp/protocol/connection.cpp \
+            client/cpp/protocol/usb_transport.cpp \
+            client/cpp/pc_main.cpp \
+            -o build/pc_main
+          ls -la build/
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pc-test-${{ matrix.os }}-${{ github.run_id }}
+          name: pc-${{ matrix.os }}-${{ github.run_id }}
           path: |
             build/test.exe
+            build/pc_main*
             test.log
           if-no-files-found: ignore

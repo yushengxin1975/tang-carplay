@@ -64,9 +64,9 @@ protected:
     ErrorCallback error_cb_;
 };
 
-// ----- PC implementation (libusbdotnet) -----
-// Concrete impl uses libusbdotnet.LibUsbDotNet.UsbDevice.Open;
-// declared in separate header to avoid dragging libusbdotnet into CE build.
+// ----- PC implementation (libusb-1.0 dynamic) -----
+// Dynamic libusb load; readPump drives one blocking bulk read at a time
+// (call in a loop from main; deterministic Ctrl+C handling).
 
 class UsbTransport_PC : public UsbTransport {
 public:
@@ -78,6 +78,11 @@ public:
     void submitRead(std::size_t buf_size, RecvCallback cb) override;
     void write(const uint8_t *data, std::size_t len) override;
     void close() override;
+
+    // One blocking bulk-IN read; fires the RecvCallback on data.
+    // Returns false on fatal USB error (timeout returns true).
+    bool readPump(int timeout_ms = 200);
+
 private:
     struct Impl;
     Impl *impl_;
