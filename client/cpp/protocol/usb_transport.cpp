@@ -188,7 +188,7 @@ struct UsbTransport_PC::Impl {
     int  (*release_interface)(void *, int) = nullptr;
     int  (*bulk_transfer)(void *, unsigned char, unsigned char *,
                           int, int *, unsigned) = nullptr;
-    void (*set_configuration)(void *, int) = nullptr;
+    int  (*set_configuration)(void *, int) = nullptr;
 };
 
 UsbTransport_PC::UsbTransport_PC() : impl_(new Impl) {}
