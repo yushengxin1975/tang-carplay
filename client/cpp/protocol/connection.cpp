@@ -34,10 +34,10 @@ void Connection::start() {
     if (cbs_.on_state) cbs_.on_state(ConnState::NO_DEVICE);
 }
 
-void Connection::sendInit(bool encrypted) {
+void Connection::sendInit(bool encrypted, int work_mode) {
     // Mirrors FastCarPlay Connection::sendInit() with default settings
     // (left-hand-drive, night auto, weak charge, wifi5, bt audio off,
-    // autoconnect on, micType 1, dpi 120, androidMode 1).
+    // autoconnect on, micType 1, dpi 120, work_mode 2=CarPlay, 1=AndroidAuto).
     //
     // Encrypted mode (FastCarPlay): seed = rand() after srand(time);
     // CMD_ENCRYPTION(seed) is sent FIRST and unencrypted; the box replies
@@ -57,7 +57,8 @@ void Connection::sendInit(bool encrypted) {
     const int autoSizeW = 800, autoSizeH = 450;
 
     send(Message::File("/tmp/screen_dpi", 120));
-    send(Message::File("/etc/android_work_mode", 1));
+    // AutoKit reverse-engineered: 2 = WORK_MODE_IPHONE_CARPLAY, 1 = WORK_MODE_ANDROID_AUTO
+    send(Message::File("/etc/android_work_mode", work_mode));
     send(Message::Init(1024, 576, 60));
     const std::string json =
         "{\"syncTime\":" + std::to_string(syncTime) + ",\"mediaDelay\":300,"

@@ -61,6 +61,7 @@ int main(int argc, char **argv) {
     // Encrypted protocol is only used on 2024+ firmware (FastCarPlay settings.txt).
     // Default to plain mode; use --enc to enable CFB128 encryption.
     bool encrypted = false;
+    int work_mode = 2; // Default 2: WORK_MODE_IPHONE_CARPLAY (AutoKit reverse-engineered)
     UsbTransport_PC::ClaimOptions co;
     // Default: clean minimal claim (matches official Carlinkit libBoxUSB.dll).
     // Note: set_configuration(1) MUST NOT be called as it wedges the 2018 box gadget.
@@ -69,19 +70,24 @@ int main(int argc, char **argv) {
     co.set_config = false;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--help") || !std::strcmp(argv[i], "-h")) {
-            std::printf("Usage: pc_main.exe [--plain] [--enc] [--alt-setting] [--clear-halt] [--set-config] [--reset-reopen]\n");
+            std::printf("Usage: pc_main.exe [--plain] [--enc] [--carplay] [--android] [--mode <1|2>] [--alt-setting] [--clear-halt] [--set-config] [--reset-reopen]\n");
             return 0;
         }
         else if (!std::strcmp(argv[i], "--plain")) encrypted = false;
         else if (!std::strcmp(argv[i], "--enc")) encrypted = true;
+        else if (!std::strcmp(argv[i], "--carplay")) work_mode = 2;
+        else if (!std::strcmp(argv[i], "--android")) work_mode = 1;
+        else if (!std::strcmp(argv[i], "--mode") && i + 1 < argc) work_mode = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--reset-reopen")) co.reset_reopen = true;
         else if (!std::strcmp(argv[i], "--alt-setting")) co.alt_setting = true;
         else if (!std::strcmp(argv[i], "--clear-halt")) co.clear_halt = true;
         else if (!std::strcmp(argv[i], "--set-config")) co.set_config = true;
         else if (!std::strcmp(argv[i], "--no-alt")) { co.alt_setting = false; co.clear_halt = false; }
     }
-    std::printf("=== Carlinkit PC client (protocol bring-up, %s) ===\n",
-                encrypted ? "ENCRYPTED (CFB128)" : "plain");
+    std::printf("=== Carlinkit PC client (protocol bring-up, %s, mode=%d %s) ===\n",
+                encrypted ? "ENCRYPTED (CFB128)" : "plain",
+                work_mode,
+                work_mode == 2 ? "CarPlay" : work_mode == 1 ? "AndroidAuto" : "other");
     if (co.reset_reopen || co.alt_setting || co.clear_halt || co.set_config) {
         std::printf("claim options:%s%s%s%s\n",
                     co.reset_reopen  ? " reset-reopen" : "",
@@ -133,9 +139,9 @@ int main(int argc, char **argv) {
             std::unique_ptr<UsbTransport>(reinterpret_cast<UsbTransport *>(t)), cb);
         conn->start();
         std::printf("interface claimed & reader active.\n");
-        std::printf("sending config burst (sendInit, %s)...\n",
-                    encrypted ? "encrypted" : "plain");
-        conn->sendInit(encrypted);
+        std::printf("sending config burst (sendInit, %s, mode=%d)...\n",
+                    encrypted ? "encrypted" : "plain", work_mode);
+        conn->sendInit(encrypted, work_mode);
         std::printf("config burst sent.\n");
     } catch (const std::exception &e) {
         std::printf("FATAL: %s\n", e.what());

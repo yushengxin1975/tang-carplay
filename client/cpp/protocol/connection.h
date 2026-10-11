@@ -63,7 +63,7 @@ public:
     // derives the CFB128 key/IV from the seed (FastCarPlay scheme), and
     // encrypts all subsequent File/Init/String messages (Control/Heartbeat
     // stay plain, matching FastCarPlay defaults).
-    void sendInit(bool encrypted = false);
+    void sendInit(bool encrypted = false, int work_mode = 2);
 
     // Enable encrypted mode with an explicit seed (key/IV derived from it).
     void enableEncryption(uint32_t seed) {
