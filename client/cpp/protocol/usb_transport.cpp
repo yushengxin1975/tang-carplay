@@ -175,6 +175,8 @@ void UsbTransport_CE::close() {
 #else
 #  include <dlfcn.h>
 #endif
+#include <chrono>
+#include <thread>
 
 namespace carlinkit {
 
@@ -184,6 +186,7 @@ struct UsbTransport_PC::Impl {
     void *ctx = nullptr;
     void *devh = nullptr;          // libusb_device_handle*
     bool claimed = false;          // interface 0 claimed (idempotent claim)
+    uint16_t vid = 0, pid = 0;     // last opened device (for reset-reopen)
     RecvCallback recv;
     volatile bool reader_running = false;
 
@@ -205,6 +208,8 @@ struct UsbTransport_PC::Impl {
                              unsigned short, unsigned short, unsigned char *,
                              unsigned short, unsigned) = nullptr;
     int  (*reset_device)(void *) = nullptr;
+    int  (*set_interface_alt_setting)(void *, int, int) = nullptr;
+    int  (*clear_halt)(void *, unsigned char) = nullptr;
 };
 
 UsbTransport_PC::UsbTransport_PC() : impl_(new Impl) {}
@@ -223,11 +228,8 @@ static void *load_sym(void *so, const char *name, char *err, size_t errlen) {
     return p;
 }
 
-void UsbTransport_PC::open(uint16_t vid, uint16_t pid) {
-    // Idempotent: pc_main opens+claims, then Connection::start() calls
-    // open() again. Re-opening here would leak the first handle (its claim
-    // still held) and make the second claim_interface fail.
-    if (impl_->devh) return;
+void UsbTransport_PC::loadLibusb() {
+    if (impl_->so) return;  // already loaded
     char err[128] = {0};
 
 #ifdef _WIN32
@@ -264,12 +266,16 @@ void UsbTransport_PC::open(uint16_t vid, uint16_t pid) {
     SYM(set_configuration,  "libusb_set_configuration");
     SYM(control_transfer,   "libusb_control_transfer");
     SYM(reset_device,       "libusb_reset_device");
+    SYM(set_interface_alt_setting, "libusb_set_interface_alt_setting");
+    SYM(clear_halt,                "libusb_clear_halt");
 #undef SYM
 
     if (impl_->init(&impl_->ctx) != 0)
         throw std::runtime_error("PC: libusb_init failed");
+}
 
-    // Enumerate and find the Carlinkit box
+void UsbTransport_PC::findAndOpen() {
+    // Enumerate and find the Carlinkit box by impl_->vid/pid, open a handle.
     void **list = nullptr;
     ssize_t n = impl_->get_device_list(impl_->ctx, &list);
     struct MiniDevDesc { uint8_t bLength, bType; uint16_t bcdUSB;
@@ -279,7 +285,7 @@ void UsbTransport_PC::open(uint16_t vid, uint16_t pid) {
         MiniDevDesc d;
         memset(&d, 0, sizeof(d));
         if (impl_->get_device_descriptor(list[i], &d) == 0 &&
-            d.vid == vid && d.pid == pid) {
+            d.vid == impl_->vid && d.pid == impl_->pid) {
             found = list[i];
             break;
         }
@@ -288,7 +294,7 @@ void UsbTransport_PC::open(uint16_t vid, uint16_t pid) {
         impl_->free_device_list(list, 1);
         char msg[96];
         snprintf(msg, sizeof(msg), "PC: Carlinkit box %04x:%04x not found (plug it in)",
-                 vid, pid);
+                 impl_->vid, impl_->pid);
         throw std::runtime_error(msg);
     }
     if (impl_->open(found, &impl_->devh) != 0) {
@@ -298,56 +304,103 @@ void UsbTransport_PC::open(uint16_t vid, uint16_t pid) {
     impl_->free_device_list(list, 1);
 }
 
+void UsbTransport_PC::open(uint16_t vid, uint16_t pid) {
+    // Idempotent: pc_main opens+claims, then Connection::start() calls
+    // open() again. Re-opening here would leak the first handle (its claim
+    // still held) and make the second claim_interface fail.
+    if (impl_->devh) return;
+    impl_->vid = vid;
+    impl_->pid = pid;
+    loadLibusb();
+    findAndOpen();
+}
+
 bool UsbTransport_PC::claim() {
     if (!impl_->devh) return false;
     if (impl_->claimed) return true;  // already claimed by us
+    const ClaimOptions &o = claim_opts;
+
 #ifdef __linux__
-    if (impl_->kernel_driver_active(impl_->devh, 0) == 1)
-        impl_->detach_kernel_driver(impl_->devh, 0);
+    auto detachKernel = [&] {
+        if (impl_->kernel_driver_active(impl_->devh, 0) == 1)
+            impl_->detach_kernel_driver(impl_->devh, 0);
+    };
+    detachKernel();
 #endif
-    // NOTE: FastCarPlay link() calls libusb_reset_device first, but on
-    // Windows/WinUSB a port reset leaves the OUT endpoint NAKing forever
-    // (every bulk write times out rc=-7). The box enumerates clean on
-    // fresh power-up, so skip the reset here. set_configuration + claim
-    // is enough.
-    if (impl_->set_configuration(impl_->devh, 1) != 0) {
-        // Box may already be configured; ignore and try claim anyway
-    }
-    if (impl_->claim_interface(impl_->devh, 0) == 0) {
-        impl_->claimed = true;
-        // Diagnostic: dump the active config descriptor's endpoints so we
-        // can verify the bulk OUT (0x01) / IN (0x81) addresses are right.
-        unsigned char cfg[512] = {0};
-        int crc = impl_->control_transfer(impl_->devh, 0x80, 0x06, 0x0200, 0,
-                                          cfg, sizeof(cfg), 1000);
-        if (crc > 0) {
-            int total = cfg[2] | (cfg[3] << 8);
-            fprintf(stderr, "[USB-CFG] total=%d numInterfaces=%d\n", total, cfg[4]);
-            int off = 0;
-            while (off + 2 <= crc && off < total) {
-                int len = cfg[off];
-                int type = cfg[off + 1];
-                if (len < 2 || off + len > total) break;
-                if (type == 0x04) {
-                    fprintf(stderr, "[USB-IF] num=%d alt=%d numEp=%d class=%02x\n",
-                            cfg[off + 2], cfg[off + 3], cfg[off + 4], cfg[off + 5]);
-                } else if (type == 0x05) {
-                    int addr = cfg[off + 2];
-                    int attr = cfg[off + 3];
-                    int mps = cfg[off + 4] | (cfg[off + 5] << 8);
-                    fprintf(stderr, "[USB-EP] addr=0x%02x attr=0x%02x(%s) mps=%d\n",
-                            addr, attr,
-                            (attr & 3) == 2 ? "bulk" :
-                            (attr & 3) == 3 ? "int" : "ctrl", mps);
-                }
-                off += len;
-            }
-        } else {
-            fprintf(stderr, "[USB-CFG] GET_DESCRIPTOR failed rc=%d\n", crc);
+
+    // --reset-reopen: FastCarPlay link() does reset_device first. On Linux
+    // the handle stays valid; on Windows/WinUSB reset invalidates the handle
+    // so we close + reopen after. Resets the box to a clean state.
+    if (o.reset_reopen) {
+        int rc = impl_->reset_device(impl_->devh);
+        fprintf(stderr, "[USB-RESET] reset_device rc=%d\n", rc);
+        impl_->close_fn(impl_->devh);
+        impl_->devh = nullptr;
+        impl_->claimed = false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        try {
+            findAndOpen();
+        } catch (const std::exception &e) {
+            fprintf(stderr, "[USB-RESET] reopen failed: %s\n", e.what());
+            return false;
         }
-        return true;
+        fprintf(stderr, "[USB-RESET] reopened handle ok\n");
+#ifdef __linux__
+        detachKernel();
+#endif
     }
-    return false;
+
+    if (!o.no_set_config) {
+        int rc = impl_->set_configuration(impl_->devh, 1);
+        fprintf(stderr, "[USB-CFG] set_configuration(1) rc=%d\n", rc);
+    }
+
+    int clrc = impl_->claim_interface(impl_->devh, 0);
+    fprintf(stderr, "[USB-CLAIM] claim_interface(0) rc=%d\n", clrc);
+    if (clrc != 0) return false;
+    impl_->claimed = true;
+
+    if (o.alt_setting) {
+        int r = impl_->set_interface_alt_setting(impl_->devh, 0, 0);
+        fprintf(stderr, "[USB-ALT] set_interface_alt_setting(0,0) rc=%d\n", r);
+    }
+    if (o.clear_halt) {
+        int r1 = impl_->clear_halt(impl_->devh, 0x02);
+        int r2 = impl_->clear_halt(impl_->devh, 0x81);
+        fprintf(stderr, "[USB-HALT] clear_halt OUT(0x02) rc=%d IN(0x81) rc=%d\n", r1, r2);
+    }
+
+    // Diagnostic: dump the active config descriptor's endpoints so we
+    // can verify the bulk OUT (0x02) / IN (0x81) addresses are right.
+    unsigned char cfg[512] = {0};
+    int drc = impl_->control_transfer(impl_->devh, 0x80, 0x06, 0x0200, 0,
+                                      cfg, sizeof(cfg), 1000);
+    if (drc > 0) {
+        int total = cfg[2] | (cfg[3] << 8);
+        fprintf(stderr, "[USB-CFG] total=%d numInterfaces=%d\n", total, cfg[4]);
+        int off = 0;
+        while (off + 2 <= drc && off < total) {
+            int len = cfg[off];
+            int type = cfg[off + 1];
+            if (len < 2 || off + len > total) break;
+            if (type == 0x04) {
+                fprintf(stderr, "[USB-IF] num=%d alt=%d numEp=%d class=%02x\n",
+                        cfg[off + 2], cfg[off + 3], cfg[off + 4], cfg[off + 5]);
+            } else if (type == 0x05) {
+                int addr = cfg[off + 2];
+                int attr = cfg[off + 3];
+                int mps = cfg[off + 4] | (cfg[off + 5] << 8);
+                fprintf(stderr, "[USB-EP] addr=0x%02x attr=0x%02x(%s) mps=%d\n",
+                        addr, attr,
+                        (attr & 3) == 2 ? "bulk" :
+                        (attr & 3) == 3 ? "int" : "ctrl", mps);
+            }
+            off += len;
+        }
+    } else {
+        fprintf(stderr, "[USB-CFG] GET_DESCRIPTOR failed rc=%d\n", drc);
+    }
+    return true;
 }
 
 void UsbTransport_PC::submitRead(std::size_t, RecvCallback cb) {

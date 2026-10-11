@@ -61,12 +61,24 @@ int main(int argc, char **argv) {
     // encrypted protocol (FastCarPlay settings.txt warning). --plain forces
     // the legacy unencrypted handshake.
     bool encrypted = true;
+    UsbTransport_PC::ClaimOptions co;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--plain")) encrypted = false;
         else if (!std::strcmp(argv[i], "--enc")) encrypted = true;
+        else if (!std::strcmp(argv[i], "--reset-reopen")) co.reset_reopen = true;
+        else if (!std::strcmp(argv[i], "--alt-setting")) co.alt_setting = true;
+        else if (!std::strcmp(argv[i], "--clear-halt")) co.clear_halt = true;
+        else if (!std::strcmp(argv[i], "--no-set-config")) co.no_set_config = true;
     }
     std::printf("=== Carlinkit PC client (protocol bring-up, %s) ===\n",
                 encrypted ? "ENCRYPTED (CFB128)" : "plain");
+    if (co.reset_reopen || co.alt_setting || co.clear_halt || co.no_set_config) {
+        std::printf("claim options:%s%s%s%s\n",
+                    co.reset_reopen  ? " reset-reopen" : "",
+                    co.alt_setting   ? " alt-setting" : "",
+                    co.clear_halt    ? " clear-halt" : "",
+                    co.no_set_config ? " no-set-config" : "");
+    }
 
     std::ofstream vout("sample_video.bin", std::ios::binary);
     std::ofstream aout("sample_audio.bin", std::ios::binary);
@@ -103,6 +115,7 @@ int main(int argc, char **argv) {
     };
 
     auto *t = new UsbTransport_PC();
+    t->claim_opts = co;
     Connection *conn = nullptr;
     try {
         std::printf("opening box (0x1314:0x1520)...\n");

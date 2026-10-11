@@ -83,7 +83,20 @@ public:
     // Returns false on fatal USB error (timeout returns true).
     bool readPump(int timeout_ms = 200);
 
+    // Diagnostic claim-sequence options (set from pc_main argv). Default
+    // (all false) matches the pre-option build: set_configuration + claim.
+    // Used to hunt the EP 0x02 write-timeout (rc=-7); see docs/HANDOVER.md §4.6.
+    struct ClaimOptions {
+        bool reset_reopen = false;   // --reset-reopen: reset_device then reopen handle (FastCarPlay-equivalent, Windows-safe)
+        bool alt_setting = false;    // --alt-setting: set_interface_alt_setting(0,0) after claim
+        bool clear_halt = false;     // --clear-halt: clear_halt OUT(0x02)+IN(0x81) after claim
+        bool no_set_config = false;  // --no-set-config: skip set_configuration
+    };
+    ClaimOptions claim_opts;
+
 private:
+    void loadLibusb();   // dlopen/LoadLibrary + resolve symbols + libusb_init
+    void findAndOpen();  // enumerate by vid/pid and open a handle (uses impl_->vid/pid)
     struct Impl;
     Impl *impl_;
 };
