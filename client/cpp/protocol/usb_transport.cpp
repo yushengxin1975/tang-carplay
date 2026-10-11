@@ -305,12 +305,11 @@ bool UsbTransport_PC::claim() {
     if (impl_->kernel_driver_active(impl_->devh, 0) == 1)
         impl_->detach_kernel_driver(impl_->devh, 0);
 #endif
-    // FastCarPlay link() resets the device FIRST for a clean session state
-    // (clears any stale session from previous hosts). Best-effort: on
-    // Windows a reset may re-enumerate; log the result either way.
-    int rr = impl_->reset_device(impl_->devh);
-    fprintf(stderr, "[USB-RESET] rc=%d%s\n", rr,
-            rr == 0 ? "" : " (continuing anyway)");
+    // NOTE: FastCarPlay link() calls libusb_reset_device first, but on
+    // Windows/WinUSB a port reset leaves the OUT endpoint NAKing forever
+    // (every bulk write times out rc=-7). The box enumerates clean on
+    // fresh power-up, so skip the reset here. set_configuration + claim
+    // is enough.
     if (impl_->set_configuration(impl_->devh, 1) != 0) {
         // Box may already be configured; ignore and try claim anyway
     }
