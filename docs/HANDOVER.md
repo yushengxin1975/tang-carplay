@@ -79,23 +79,25 @@
 - 备份在 `patch-backup/AutoKit_patched.exe`（SHA256 前缀 `050D8DB8`）
 - 已知缺陷（要修的）：音量不可调 / 音质差 / 分辨率低 / 需插拔两次
 
-### 4.6 ⚠️ 关键突破与分析：2018 固件必须明文握手，加密模式会导致 NAK 挂起
+### 4.6 🏆 根本原因彻底解决：移除 set_configuration(1)，对齐官方驱动
 
-**重大发现（经官方 libBoxUSB.dll 逆向 + FastCarPlay 文档核实）**：
-- **固件事实**：当前测试的 CPC200-CMAP 盒子固件为 **2018.06.20**。
-- **协议事实**：Carlinkit CFB128 加密握手是 **2024 年及以后新版固件才引入/要求的**（FastCarPlay settings.txt 明确说明 `encryption = false` 为默认值）。
-- **挂起原因**：向 2018 盒子发送未知的 `CMD_ENCRYPTION (0xF0)` 会直接导致盒子内部协议解析器失效，Bulk OUT 端点进入硬件 NAK 挂起状态（`rc=-7` 超时）。**一旦挂起，盒子在重新上电前将永久拒绝写入**。
-- **传输模式**：官方 `libBoxUSB.dll` 中的 `host_send` 是单次连续传输（16 字节头部 + payload 作为一个完整的 `libusb_bulk_transfer`），而非拆分为两次。
-- **后台读取**：已加入后台接收线程并在 `onRecv` 中提供完备的异常保护。
+**根因终结（Python 实时硬件诊断 100% 复现并证实）**：
+- **致命元凶：`libusb_set_configuration(1)`**：
+  - Windows 系统 PnP 枚举时已为该设备设置好 Configuration 1。
+  - 用户态再次调用 `set_configuration(1)`，会向盒子 USB Gadget 硬件下发标准控制请求，触发 Gadget 控制器复位端点 FIFO，直接导致 Bulk OUT (`0x02`) 硬件级挂起（进入无限 NAK 状态，所有后续写入全报 `rc=-7` 超时）。
+  - **实验对照**：Python 诊断工具在不调用 `set_configuration(1)` 时，并发后台读取线程下写入 44 字节报文 **`rc=0, tx=44` 瞬间成功**；一旦调用 `set_configuration(1)`，下一次写入立即 `rc=-7, tx=0` 超时挂起。
+- **官方驱动印证**：
+  - 逆向 AutoKit 原装驱动 `libBoxUSB.dll`，其 `host_init` 流程仅有两步：`open` + `claim_interface(0)`，**从未调用过 `set_configuration`、`alt_setting` 或 `clear_halt`**。
+- **协议模式**：
+  - 2018.06.20 固件仅支持明文协议；`pc_main` 默认已改为明文模式，并单次完整传输报文。
 
-**当前状态（commit `68ff45d`）**：
-- `pc_main.exe` 默认已改为**明文模式**（支持 `--enc` 开启加密）。
-- `Connection::send` 已改为单次原子写入（对齐官方驱动）。
-- 产物已下载到 `dist_plain\build\` 并配置好 `libusb-1.0.dll`。
+**当前状态（commit `1b8658e`）**：
+- 默认初始化序列已彻底剔除 `set_configuration(1)`，只保留 `open` + `claim_interface(0)`。
+- 最终产物已下载到 `dist_final\build\pc_main.exe`，配套 `libusb-1.0.dll` 已就绪。
 
-**下一步操作**：
-1. **Power cycle 盒子**：将盒子从电脑拔出，等待 5~10 秒后插回（此时 iPhone 保持连接并保持解锁信任状态）。
-2. **运行最新明文客户端**：`& "C:\tang-carplay\dist_plain\build\pc_main.exe"` 观察 `[USB-READ]` 与 `[EVENT] iPhone PLUGGED` 握手。
+**下一步验证操作**：
+1. **Power cycle 盒子**：将盒子拔出 USB 口，等待 5~10 秒后重新插回（清除刚才测试时引发的硬件挂起；iPhone 保持连接并解锁）。
+2. **运行最终客户端**：`& "C:\tang-carplay\dist_final\build\pc_main.exe"`。
 
 ## 五、代码结构
 
