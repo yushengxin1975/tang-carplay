@@ -79,32 +79,23 @@
 - 备份在 `patch-backup/AutoKit_patched.exe`（SHA256 前缀 `050D8DB8`）
 - 已知缺陷（要修的）：音量不可调 / 音质差 / 分辨率低 / 需插拔两次
 
-### 4.6 ⚠️ 当前阻塞：盒子不回数据（写入已解决）
+### 4.6 ⚠️ 关键突破与分析：2018 固件必须明文握手，加密模式会导致 NAK 挂起
 
-**进展**：通过 `set_interface_alt_setting(0,0)` + `clear_halt` + 写超时 3000ms，**plain 模式写入已成功**（0 个 rc=-7 错误）。CI 产物静态链接，本地直接可跑。
+**重大发现（经官方 libBoxUSB.dll 逆向 + FastCarPlay 文档核实）**：
+- **固件事实**：当前测试的 CPC200-CMAP 盒子固件为 **2018.06.20**。
+- **协议事实**：Carlinkit CFB128 加密握手是 **2024 年及以后新版固件才引入/要求的**（FastCarPlay settings.txt 明确说明 `encryption = false` 为默认值）。
+- **挂起原因**：向 2018 盒子发送未知的 `CMD_ENCRYPTION (0xF0)` 会直接导致盒子内部协议解析器失效，Bulk OUT 端点进入硬件 NAK 挂起状态（`rc=-7` 超时）。**一旦挂起，盒子在重新上电前将永久拒绝写入**。
+- **传输模式**：官方 `libBoxUSB.dll` 中的 `host_send` 是单次连续传输（16 字节头部 + payload 作为一个完整的 `libusb_bulk_transfer`），而非拆分为两次。
+- **后台读取**：已加入后台接收线程并在 `onRecv` 中提供完备的异常保护。
 
-**当前现象**：
-- `pc_main.exe --plain`：写入全部成功，但盒子 IN 端点无任何数据（无 PLUGGED / VIDEO / AUDIO），STAT 显示 0 帧
-- `pc_main.exe`（加密默认）：如果前一次跑过 plain，写入 rc=-7（盒子停止读 OUT）
-- **盒子行为**：power cycle 后接受第一次配置突发（写入成功），但不回数据；之后停止读 OUT（后续运行全 rc=-7）
-
-**已排除的原因**：
-- ❌ 端点号错（已修正 0x01→0x02）
-- ❌ `libusb_reset_device`（已移除）
-- ❌ WinUSB 驱动（claim_interface 成功，alt-setting + clear-halt 成功）
-- ❌ 写超时太短（已从 1000ms 提到 3000ms，匹配 FastCarPlay）
-- ❌ MinGW DLL 依赖（已静态链接 `-static`，exe 自包含）
-
-**最可能的原因（按概率排序）**：
-1. **盒子需要加密模式才能回数据**：plain 模式只是"写入成功"但盒子不认内容，加密模式才触发真正握手。但加密模式还没在 power cycle 后作为第一次运行测试过——**这是最优先的下一步**。
-2. **盒子需要 iPhone 先连上才开 IN 端点**：用户已插 iPhone，但可能需要先看到盒子端的 USB 枚举变化。
-3. **加密握手格式不对**：盒子收到 CMD_ENCRYPTION(seed) 但 seed 派生方案与固件不匹配，直接忽略。
-4. **盒子固件版本太新**，协议变了（FastCarPlay settings.txt 警告 2024+ 固件）。
+**当前状态（commit `68ff45d`）**：
+- `pc_main.exe` 默认已改为**明文模式**（支持 `--enc` 开启加密）。
+- `Connection::send` 已改为单次原子写入（对齐官方驱动）。
+- 产物已下载到 `dist_plain\build\` 并配置好 `libusb-1.0.dll`。
 
 **下一步操作**：
-1. **Power cycle 盒子**（拔 USB → 等 10s → 插回），然后**第一次就跑加密模式** `pc_main.exe`（不加 --plain）
-2. 如果加密模式写入成功但仍无数据：用 USBPcap 抓 AutoKit 连盒子的流量对比
-3. 如果加密模式写入 rc=-7：说明 alt-setting/clear-halt 在加密路径有问题，需进一步排查
+1. **Power cycle 盒子**：将盒子从电脑拔出，等待 5~10 秒后插回（此时 iPhone 保持连接并保持解锁信任状态）。
+2. **运行最新明文客户端**：`& "C:\tang-carplay\dist_plain\build\pc_main.exe"` 观察 `[USB-READ]` 与 `[EVENT] iPhone PLUGGED` 握手。
 
 ## 五、代码结构
 
