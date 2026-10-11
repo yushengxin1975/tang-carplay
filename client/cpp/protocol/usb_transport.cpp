@@ -189,6 +189,7 @@ struct UsbTransport_PC::Impl {
     uint16_t vid = 0, pid = 0;     // last opened device (for reset-reopen)
     RecvCallback recv;
     volatile bool reader_running = false;
+    std::thread reader_thread;
 
     int  (*init)(void **) = nullptr;
     void (*exit_fn)(void *) = nullptr;
@@ -405,8 +406,29 @@ bool UsbTransport_PC::claim() {
 
 void UsbTransport_PC::submitRead(std::size_t, RecvCallback cb) {
     impl_->recv = std::move(cb);
-    // PC uses a polling read loop started by the caller (pc_main) for
-    // deterministic Ctrl+C handling; see readPump().
+    if (!impl_->reader_running) {
+        impl_->reader_running = true;
+        impl_->reader_thread = std::thread([this]() {
+            while (impl_->reader_running) {
+                if (!impl_->devh) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    continue;
+                }
+                unsigned char buf[64 * 1024];
+                int rx = 0;
+                int rc = impl_->bulk_transfer(impl_->devh, 0x81, buf, sizeof(buf),
+                                              &rx, 100);
+                if (rc == 0 && rx > 0) {
+                    fprintf(stderr, "[USB-READ] rx=%d\n", rx);
+                    if (impl_->recv) impl_->recv(buf, static_cast<std::size_t>(rx));
+                } else if (rc != 0 && rc != -7 && rc != -8) {
+                    fprintf(stderr, "[USB-READ] fatal err rc=%d\n", rc);
+                    break;
+                }
+            }
+            impl_->reader_running = false;
+        });
+    }
 }
 
 void UsbTransport_PC::write(const uint8_t *data, std::size_t len) {
@@ -424,6 +446,10 @@ void UsbTransport_PC::write(const uint8_t *data, std::size_t len) {
 }
 
 void UsbTransport_PC::close() {
+    impl_->reader_running = false;
+    if (impl_->reader_thread.joinable()) {
+        impl_->reader_thread.join();
+    }
     if (impl_->devh) {
         if (impl_->claimed) impl_->release_interface(impl_->devh, 0);
         impl_->claimed = false;
@@ -436,21 +462,26 @@ void UsbTransport_PC::close() {
     }
 }
 
-// Blocking pump: one bulk read, invoke callback, return.
-// Returns false on fatal error. pc_main calls this in a loop.
+// Blocking pump: when background reader_thread is active, acts as liveness check + sleep.
+// Otherwise performs a single bulk read. Returns false on fatal error.
 bool UsbTransport_PC::readPump(int timeout_ms) {
+    if (impl_->reader_thread.joinable()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms));
+        return impl_->reader_running;
+    }
     if (!impl_->devh) return false;
     unsigned char buf[64 * 1024];
     int rx = 0;
     int rc = impl_->bulk_transfer(impl_->devh, 0x81, buf, sizeof(buf),
                                   &rx, timeout_ms);
-    if (rc == 0 && rx > 0 && impl_->recv) {
-        impl_->recv(buf, static_cast<std::size_t>(rx));
+    if (rc == 0 && rx > 0) {
+        fprintf(stderr, "[USB-READ] rx=%d\n", rx);
+        if (impl_->recv) impl_->recv(buf, static_cast<std::size_t>(rx));
         return true;
     }
-    // LIBUSB_ERROR_TIMEOUT (-7): no data in window -> keep pumping.
-    // LIBUSB_ERROR_OVERFLOW (-8): frame bigger than buffer -> keep pumping
-    // (data lost for this read, but the box is still there).
+    if (rc != 0 && rc != -7 && rc != -8) {
+        fprintf(stderr, "[USB-READ] err rc=%d\n", rc);
+    }
     return (rc == 0 || rc == -7 || rc == -8);  // error -> false
 }
 

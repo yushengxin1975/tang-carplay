@@ -25,14 +25,12 @@ void Connection::start() {
     transport_->submitRead(64 * 1024, [this](const uint8_t *d, std::size_t n) {
         onRecv(d, n);
     });
-    // OPEN message: payload can be empty to probe basic; real impl carries
-    // host info (FastCarPlay sends 0x88 byte setup blob).
+    // In FastCarPlay, no empty OPEN/VERSION is sent here; sendInit() sends the
+    // full handshake (including CMD_OPEN with 28-byte payload).
     {
         LockGuard lock(mtx_);
         state_ = ConnState::NO_DEVICE;
     }
-    send(Cmd::OPEN);
-    send(Cmd::VERSION);
     if (cbs_.on_state) cbs_.on_state(ConnState::NO_DEVICE);
 }
 
@@ -42,14 +40,12 @@ void Connection::sendInit(bool encrypted) {
     // autoconnect on, micType 1, dpi 120, androidMode 1).
     //
     // Encrypted mode (FastCarPlay): seed = rand() after srand(time);
-    // CMD_ENCRYPTION(seed) is sent FIRST and unencrypted; the CFB128
-    // key/IV are derived from the seed; all subsequent File/Init/String
-    // messages are encrypted (Control/Heartbeat stay plain).
+    // CMD_ENCRYPTION(seed) is sent FIRST and unencrypted; the box replies
+    // with CMD_ENCRYPTION (len 0), at which point cipher_enabled_ becomes true.
     if (encrypted) {
         std::srand(static_cast<unsigned>(std::time(nullptr)));
         const uint32_t seed = static_cast<uint32_t>(std::rand());
         cipher_.init_seed(seed);
-        cipher_enabled_ = true;
         send(Message::Encryption(seed));
     }
     const int32_t syncTime = static_cast<int32_t>(std::time(nullptr));
@@ -137,6 +133,9 @@ void Connection::onRecv(const uint8_t *data, std::size_t len) {
         if (off + frame > len)
             break;  // incomplete tail; dropped (no cross-read buffering yet)
 
+        std::fprintf(stderr, "[USB-IN] magic=0x%08X type=%u len=%d\n",
+                     h.magic, h.type, h.length);
+
         Message msg = Message::parse(data + off, frame);
         if (msg.encrypted()) {
             if (msg.payload_size() == 0)
@@ -200,8 +199,13 @@ void Connection::dispatch(const Message &msg) {
     case Cmd::HEARTBEAT:
         send(Cmd::HEARTBEAT);  // immediate reply (keepalive)
         break;
-    case Cmd::VERSION:
     case Cmd::ENCRYPTION:
+        if (n == 0) {
+            cipher_enabled_ = true;
+            std::fprintf(stderr, "[ENCRYPT] Box acknowledged encryption handshake (len 0)\n");
+        }
+        break;
+    case Cmd::VERSION:
     case Cmd::DEVICE_LIST:
     case Cmd::APP_INFO:
     case Cmd::MEDIA_INFO:

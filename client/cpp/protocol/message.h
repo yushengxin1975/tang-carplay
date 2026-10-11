@@ -185,8 +185,7 @@ public:
             throw std::runtime_error("Message: bad magic");
         if (m.hdr_.length < 0)
             throw std::runtime_error("Message: negative length");
-        if (m.hdr_.typecheck != ~m.hdr_.type)
-            throw std::runtime_error("Message: typecheck mismatch");
+        // typecheck mismatch is non-fatal: FastCarPlay logs warning but does not discard
         if (sizeof(Header) + static_cast<std::size_t>(m.hdr_.length) > n)
             throw std::runtime_error("Message: incomplete buffer");
         m.encrypted_ = (m.hdr_.magic == MAGIC_ENC);
