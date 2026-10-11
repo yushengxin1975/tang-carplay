@@ -204,6 +204,7 @@ struct UsbTransport_PC::Impl {
     int  (*control_transfer)(void *, unsigned char, unsigned char,
                              unsigned short, unsigned short, unsigned char *,
                              unsigned short, unsigned) = nullptr;
+    int  (*reset_device)(void *) = nullptr;
 };
 
 UsbTransport_PC::UsbTransport_PC() : impl_(new Impl) {}
@@ -262,6 +263,7 @@ void UsbTransport_PC::open(uint16_t vid, uint16_t pid) {
     SYM(bulk_transfer,      "libusb_bulk_transfer");
     SYM(set_configuration,  "libusb_set_configuration");
     SYM(control_transfer,   "libusb_control_transfer");
+    SYM(reset_device,       "libusb_reset_device");
 #undef SYM
 
     if (impl_->init(&impl_->ctx) != 0)
@@ -303,6 +305,12 @@ bool UsbTransport_PC::claim() {
     if (impl_->kernel_driver_active(impl_->devh, 0) == 1)
         impl_->detach_kernel_driver(impl_->devh, 0);
 #endif
+    // FastCarPlay link() resets the device FIRST for a clean session state
+    // (clears any stale session from previous hosts). Best-effort: on
+    // Windows a reset may re-enumerate; log the result either way.
+    int rr = impl_->reset_device(impl_->devh);
+    fprintf(stderr, "[USB-RESET] rc=%d%s\n", rr,
+            rr == 0 ? "" : " (continuing anyway)");
     if (impl_->set_configuration(impl_->devh, 1) != 0) {
         // Box may already be configured; ignore and try claim anyway
     }
