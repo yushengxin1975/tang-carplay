@@ -1,6 +1,6 @@
 # 项目交接文档 — BYD 唐 2015 Carlinkit 客户端开发
 
-> 生成时间：2026-10-11 | 最后 commit：`8ecb45c`（移除 reset）
+> 生成时间：2026-10-11 | 最后 commit：`bc479b4`（静态链接 pc_main）
 > 仓库：https://github.com/yushengxin1975/tang-carplay（私有）
 
 ## 一、项目目标
@@ -15,11 +15,11 @@
 | 硬件档案 | ✅ 完成 | `docs/HARDWARE.md`（MT3360/OMX/Mali/USB 双 HCD） |
 | PC 协议层 C++ | ✅ 完成 | `client/cpp/protocol/`（Message/AES-CBC+CFB128/Connection） |
 | PC 单元测试 | ✅ **36/36 全过** | 含 NIST FIPS-197 AES + NIST SP800-38A CFB128 KAT，双平台 CI |
-| PC USB transport | ✅ 编译通过 | libusb-1.0 **动态加载**（零链接依赖），OUT 端点 0x02 已修正 |
-| pc_main 控制台工具 | ✅ 编译通过 | `--enc`（默认）/`--plain` 双模式，连盒子→握手→收流统计+采样落盘 |
+| PC USB transport | ✅ 编译通过 | libusb-1.0 **动态加载**（零链接依赖），OUT 端点 0x02 已修正，alt-setting+clear-halt 默认开 |
+| pc_main 控制台工具 | ✅ **真机运行** | `--enc`（默认）/`--plain` 双模式，静态链接自包含 exe，plain 模式写入 0 错误 |
 | CE 客户端可执行 | ✅ **编译链接成功** | `carlinkit_ce.exe` ARM 80KB，CI 产出 |
 | **CFB128 加密协议** | ✅ **已实现+测试** | FastCarPlay 兼容：seed 派生 key/IV，CFB128 流模式，36 测试全过 |
-| **pc_main 真机测试** | ⚠️ **阻塞** | 写入超时 rc=-7，盒子不读 OUT 端点（详见 §四 4.6） |
+| **pc_main 真机测试** | ⚠️ **部分突破** | plain 模式写入成功（0 错误），但盒子不回数据；加密模式待 power cycle 后重测 |
 | CE 上车集成 | ❌ 未开始 | M2 里程碑 |
 | 媒体层（视频/音频解码） | ❌ 未开始 | Phase B.1 后半段 |
 
@@ -79,27 +79,32 @@
 - 备份在 `patch-backup/AutoKit_patched.exe`（SHA256 前缀 `050D8DB8`）
 - 已知缺陷（要修的）：音量不可调 / 音质差 / 分辨率低 / 需插拔两次
 
-### 4.6 ⚠️ 当前阻塞：pc_main 写入超时 rc=-7
+### 4.6 ⚠️ 当前阻塞：盒子不回数据（写入已解决）
 
-**现象**：pc_main 连盒子后，所有 `libusb_bulk_transfer` 写 EP 0x02 均超时（rc=-7 = `LIBUSB_ERROR_TIMEOUT`），盒子不读 OUT 端点。明文/加密模式都一样。盒子 IN 端点也无数据。
+**进展**：通过 `set_interface_alt_setting(0,0)` + `clear_halt` + 写超时 3000ms，**plain 模式写入已成功**（0 个 rc=-7 错误）。CI 产物静态链接，本地直接可跑。
+
+**当前现象**：
+- `pc_main.exe --plain`：写入全部成功，但盒子 IN 端点无任何数据（无 PLUGGED / VIDEO / AUDIO），STAT 显示 0 帧
+- `pc_main.exe`（加密默认）：如果前一次跑过 plain，写入 rc=-7（盒子停止读 OUT）
+- **盒子行为**：power cycle 后接受第一次配置突发（写入成功），但不回数据；之后停止读 OUT（后续运行全 rc=-7）
 
 **已排除的原因**：
-- ❌ 端点号错（已修正 0x01→0x02，rc 从 -5 NOT_FOUND 变 -7 TIMEOUT，说明端点对了但盒子不收）
-- ❌ `libusb_reset_device`（已移除 commit `8ecb45c`，移除后仍超时）
-- ❌ 盒子死机（断电重启后仍超时）
-- ❌ 加密 vs 明文（两种模式都超时）
-- ❌ WinUSB 驱动（设备管理器显示 OK，claim_interface 成功）
+- ❌ 端点号错（已修正 0x01→0x02）
+- ❌ `libusb_reset_device`（已移除）
+- ❌ WinUSB 驱动（claim_interface 成功，alt-setting + clear-halt 成功）
+- ❌ 写超时太短（已从 1000ms 提到 3000ms，匹配 FastCarPlay）
+- ❌ MinGW DLL 依赖（已静态链接 `-static`，exe 自包含）
 
 **最可能的原因（按概率排序）**：
-1. **盒子需要先收某个 control transfer 才会开始读 bulk OUT**（如 SET_INTERFACE、或 vendor request 激活会话）。FastCarPlay 在 Linux 上可能由 libusb 隐式完成。**下一步：用 Wireshark + USBPcap 抓 FastCarPlay（Linux 树莓派）连盒子的前几个包，对比 control transfer 序列**。
-2. **WinUSB 管道未真正 "started"**：INF 绑定了接口但 pipe 可能需要显式 `WinUsb_Initialize` 或 alt-setting。检查 `libusb_set_interface_alt_setting(0, 0)`。
-3. **盒子固件版本太新**，协议变了（FastCarPlay settings.txt 警告 2024+ 固件可能需要加密，但我们加密模式也超时——可能加密握手格式不对，盒子直接不读）。
-4. **盒子需要 iPhone 先连上才开 OUT 端点**（不太可能，FastCarPlay 先跟 PC 握手再等 iPhone）。
+1. **盒子需要加密模式才能回数据**：plain 模式只是"写入成功"但盒子不认内容，加密模式才触发真正握手。但加密模式还没在 power cycle 后作为第一次运行测试过——**这是最优先的下一步**。
+2. **盒子需要 iPhone 先连上才开 IN 端点**：用户已插 iPhone，但可能需要先看到盒子端的 USB 枚举变化。
+3. **加密握手格式不对**：盒子收到 CMD_ENCRYPTION(seed) 但 seed 派生方案与固件不匹配，直接忽略。
+4. **盒子固件版本太新**，协议变了（FastCarPlay settings.txt 警告 2024+ 固件）。
 
-**调试方法**：
-- 在 Linux 树莓派上跑 FastCarPlay 原版连同一盒子，`usbmon` 或 Wireshark 抓包，对比前 10 个 USB 事务
-- 或在 Windows 上用 USBPcap 抓 AutoKit 连盒子的流量（AutoKit 能连成功）
-- 重点看：claim 后第一个 bulk OUT 之前有没有 control transfer
+**下一步操作**：
+1. **Power cycle 盒子**（拔 USB → 等 10s → 插回），然后**第一次就跑加密模式** `pc_main.exe`（不加 --plain）
+2. 如果加密模式写入成功但仍无数据：用 USBPcap 抓 AutoKit 连盒子的流量对比
+3. 如果加密模式写入 rc=-7：说明 alt-setting/clear-halt 在加密路径有问题，需进一步排查
 
 ## 五、代码结构
 
@@ -167,10 +172,13 @@ g++ -std=c++17 -O2 -Wall -Iclient/include -Iclient/cpp \
 ./pc_main --enc        # 显式加密模式
 
 # Windows（需 MinGW g++ + libusb-1.0.dll）
-g++ -std=c++17 -O2 -Wall -Iclient/include -Iclient/cpp \
+g++ -std=c++17 -O2 -Wall -static -Iclient/include -Iclient/cpp \
     client/cpp/protocol/{aes_sbox_data,connection,usb_transport}.cpp \
     client/cpp/pc_main.cpp -o pc_main.exe
-./pc_main.exe          # 盒子插 USB 口运行
+# libusb-1.0.dll 放同目录（libusb.info 下载 MinGW 64-bit 版）
+./pc_main.exe          # 盒子插 USB 口运行（加密默认）
+./pc_main.exe --plain  # 强制明文模式
+./pc_main.exe --no-alt # 禁用 alt-setting+clear-halt（调试用）
 ```
 
 ### 6.2 完整环境（含 CE 编译）
@@ -187,15 +195,14 @@ g++ -std=c++17 -O2 -Wall -Iclient/include -Iclient/cpp \
 
 ## 七、下一步工作（按优先级排序）
 
-### M1.5a — 解决写入超时（当前阻塞，最高优先级）
+### M1.5a — 解决盒子不回数据（当前阻塞，最高优先级）
 
-**问题**：pc_main 写 EP 0x02 全部 rc=-7 超时，盒子不读 OUT 端点（详见 §4.6）。
+**问题**：plain 模式写入已成功（0 错误），但盒子 IN 端点无任何数据。加密模式还没在 power cycle 后作为第一次运行测试（详见 §4.6）。
 
 **推荐路径**（按成本排序）：
-1. **抓包对比**（最快）：在 Windows 装 [USBPcap](https://usbpcap.codeplex.com/)，抓 AutoKit 连盒子的前 20 个 USB 事务。AutoKit 能连成功，看它在 claim 后第一个 bulk OUT 之前发了什么 control transfer。把缺失的 control transfer 加到 `UsbTransport_PC::claim()` 里。
-2. **Linux 对照**：树莓派上跑 FastCarPlay 原版连同一盒子，`sudo modprobe usbmon` + `wireshark` 抓包。对比 Linux 和 Windows 的 USB 事务序列差异。
-3. **试 alt-setting**：在 claim 后加 `libusb_set_interface_alt_setting(devh, 0, 0)`，有些设备需要显式 SET_INTERFACE 才激活 pipe。
-4. **试不 set_configuration**：盒子可能已配置，`set_configuration(1)` 可能反而打乱状态。注释掉试试。
+1. **Power cycle + 加密模式首跑**（最快）：拔盒子 USB → 等 10s → 插回 → 立刻跑 `pc_main.exe`（加密默认，不加 --plain）。如果写入成功且收到数据 → Phase B.1 完成。
+2. **抓包对比**：在 Windows 装 [USBPcap](https://usbpcap.codeplex.com/)，抓 AutoKit 连盒子的前 20 个 USB 事务。AutoKit 能连成功，看它发了什么我们没发的。
+3. **Linux 对照**：树莓派上跑 FastCarPlay 原版连同一盒子，`sudo modprobe usbmon` + `wireshark` 抓包。
 
 ### M1.5b — pc_main 真机协议验证（解决超时后）
 ```bash
@@ -269,6 +276,13 @@ gh run download <id> --name pc-windows-latest-<id> --dir dist  # 下载 PC 产�
 | `2d66c43` | **CFB128 加密协议实现**（FastCarPlay 兼容） |
 | `d585b81` | 修 CFB128 解密反馈（IV←密文非明文） |
 | `8ecb45c` | 移除 reset（Windows 上致 OUT 端点 NAK） |
+| `cf2ffe6` | **alt-setting+clear-halt 默认开**；写超时 1000→3000ms |
+| `bc479b4` | **静态链接 pc_main.exe**（消除 MinGW DLL 依赖问题） |
 
 **CI 状态**：两个 workflow 全绿，`36 passed / 0 failed`（ubuntu + windows 双平台）。
 **单元测试覆盖**：AES-CBC NIST KAT、AES-CFB128 NIST SP800-38A KAT、CFB seed roundtrip、Connection 级加密收发、Message 序列化/解析、Connection 生命周期。
+
+**真机测试结果**（2026-10-11）：
+- `pc_main.exe --plain`：alt-setting + clear-halt 成功，写入 0 错误，但盒子不回数据
+- `pc_main.exe`（加密）：power cycle 后待测（前一次 plain 运行后盒子停止读 OUT）
+- 静态链接 exe 需 `libusb-1.0.dll` 放同目录（已从 dist_enc2 复制）
