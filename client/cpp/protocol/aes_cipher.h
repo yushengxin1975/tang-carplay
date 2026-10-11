@@ -112,7 +112,7 @@ public:
     bool encrypt_cfb(const uint8_t *in, std::size_t len, uint8_t *out, char *err = nullptr) {
         if (!ready_) return fail(err, "not initialised");
         if (!in || !out || len == 0) return fail(err, "encrypt_cfb: empty input");
-        cfb_crypt(in, len, out);
+        cfb_crypt(in, len, out, /*decrypt=*/false);
         return true;
     }
 
@@ -120,7 +120,7 @@ public:
     bool decrypt_cfb(const uint8_t *in, std::size_t len, uint8_t *out, char *err = nullptr) {
         if (!ready_) return fail(err, "not initialised");
         if (!in || !out || len == 0) return fail(err, "decrypt_cfb: empty input");
-        cfb_crypt(in, len, out);
+        cfb_crypt(in, len, out, /*decrypt=*/true);
         return true;
     }
 
@@ -140,10 +140,10 @@ private:
     uint8_t iv_[BLOCK];
     uint8_t chain_[BLOCK];
 
-    // CFB128 core: keystream = E(IV); out = in XOR keystream; IV <- ciphertext.
-    // Identical for encrypt and decrypt (CFB uses the block ENCRYPT function
-    // in both directions). Fresh IV per call = fresh EVP context per message.
-    void cfb_crypt(const uint8_t *in, std::size_t len, uint8_t *out) {
+    // CFB128 core: keystream = E(IV); IV <- ciphertext (ALWAYS the ciphertext,
+    // which is the OUTPUT when encrypting and the INPUT when decrypting).
+    // Fresh IV per call = fresh EVP context per message.
+    void cfb_crypt(const uint8_t *in, std::size_t len, uint8_t *out, bool decrypt) {
         uint8_t iv[BLOCK];
         memcpy(iv, iv_, BLOCK);
         std::size_t off = 0;
@@ -152,9 +152,15 @@ private:
             encrypt_block(iv, ks);
             std::size_t n = (len - off < BLOCK) ? (len - off) : BLOCK;
             for (std::size_t i = 0; i < n; ++i) {
-                uint8_t c = static_cast<uint8_t>(in[off + i] ^ ks[i]);
-                out[off + i] = c;
-                iv[i] = c;  // feedback ciphertext (encrypt and decrypt alike)
+                uint8_t c;  // ciphertext byte fed back into the IV
+                if (decrypt) {
+                    c = in[off + i];
+                    out[off + i] = static_cast<uint8_t>(c ^ ks[i]);
+                } else {
+                    out[off + i] = static_cast<uint8_t>(in[off + i] ^ ks[i]);
+                    c = out[off + i];
+                }
+                iv[i] = c;
             }
             off += n;
         }

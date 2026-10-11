@@ -165,18 +165,28 @@ static void test_connection_encrypted() {
     const char *text = "{\"syncTime\":1700000000}";
     conn.send(Message::String(Cmd::JSON_CONTROL, text));
 
-    // Read back what was written: header (16B) + encrypted payload.
+    // Read back what was written. start() already sent OPEN + VERSION
+    // (plain), so walk the frames and take the LAST one (our encrypted
+    // String message).
     const auto &sent = raw->sent();
-    EXPECT(sent.size() > 16, "encrypted frame written to transport");
-    EXPECT(sent[0] == 0xBB && sent[1] == 0x55, "outbound magic is MAGIC_ENC");
-    uint32_t len = Message::read_u32_le(sent.data() + 4);
+    std::size_t foff = 0, last = 0;
+    while (foff + 16 <= sent.size()) {
+        uint32_t flen = Message::read_u32_le(sent.data() + foff + 4);
+        std::size_t frame = 16 + static_cast<std::size_t>(flen);
+        if (foff + frame > sent.size()) break;
+        last = foff;
+        foff += frame;
+    }
+    EXPECT(sent.size() - last > 16, "encrypted frame written to transport");
+    EXPECT(sent[last] == 0xBB && sent[last + 1] == 0x55, "outbound magic is MAGIC_ENC");
+    uint32_t len = Message::read_u32_le(sent.data() + last + 4);
     EXPECT((int)len == (int)std::strlen(text), "length = plaintext length (CFB, no padding)");
 
     // Decrypt with the same seed and compare.
     AESCipher c;
     c.init_seed(seed);
     std::vector<uint8_t> plain(len);
-    c.decrypt_cfb(sent.data() + 16, len, plain.data());
+    c.decrypt_cfb(sent.data() + last + 16, len, plain.data());
     EXPECT(std::memcmp(plain.data(), text, len) == 0,
            "Connection-level CFB roundtrip matches");
 }
