@@ -416,7 +416,7 @@ void UsbTransport_PC::write(const uint8_t *data, std::size_t len) {
     // 0x02 OUT, both bulk mps=512). Writing 0x01 fails rc=-5 NOT_FOUND.
     int rc = impl_->bulk_transfer(impl_->devh, 0x02,
                          const_cast<unsigned char *>(data),
-                         static_cast<int>(len), &tx, 1000);
+                         static_cast<int>(len), &tx, 3000);
     // Diagnostic: surface write failures (previously silently ignored).
     if (rc != 0 || tx != static_cast<int>(len))
         fprintf(stderr, "[USB-WRITE] ep=0x02 len=%zu tx=%d rc=%d\n",

@@ -62,6 +62,11 @@ int main(int argc, char **argv) {
     // the legacy unencrypted handshake.
     bool encrypted = true;
     UsbTransport_PC::ClaimOptions co;
+    // On Windows/WinUSB, set_interface_alt_setting(0,0) + clear_halt are
+    // REQUIRED for the box to accept bulk OUT writes (without them every
+    // write times out rc=-7). Enable by default; --no-alt to disable.
+    co.alt_setting = true;
+    co.clear_halt = true;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--plain")) encrypted = false;
         else if (!std::strcmp(argv[i], "--enc")) encrypted = true;
@@ -69,6 +74,7 @@ int main(int argc, char **argv) {
         else if (!std::strcmp(argv[i], "--alt-setting")) co.alt_setting = true;
         else if (!std::strcmp(argv[i], "--clear-halt")) co.clear_halt = true;
         else if (!std::strcmp(argv[i], "--no-set-config")) co.no_set_config = true;
+        else if (!std::strcmp(argv[i], "--no-alt")) { co.alt_setting = false; co.clear_halt = false; }
     }
     std::printf("=== Carlinkit PC client (protocol bring-up, %s) ===\n",
                 encrypted ? "ENCRYPTED (CFB128)" : "plain");
