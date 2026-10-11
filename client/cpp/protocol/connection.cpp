@@ -108,9 +108,16 @@ void Connection::send(const Message &in) {
         msg = Message(msg.type(), false, static_cast<int32_t>(enc.size()), enc.data());
         msg.mark_encrypted();  // magic -> MAGIC_ENC (box reads encrypted frames)
     }
-    auto out = msg.serialize();
-    // Matches Carlinkit's libBoxUSB host_send: send header + payload in one contiguous transfer
-    transport_->write(out.data(), out.size());
+    // AutoKit & FastCarPlay protocol specification:
+    // Every packet is sent across USB Bulk OUT in two distinct transfers:
+    // Transfer 1: 16-byte header
+    // Transfer 2: payload (only if payload_size > 0)
+    // Sending header + payload combined into one bulk URB causes the dongle firmware's
+    // 16-byte header read to truncate/desync the gadget FIFO, stalling endpoint 0x02.
+    transport_->write(reinterpret_cast<const uint8_t *>(&msg.header()), sizeof(Header));
+    if (msg.payload_size() > 0) {
+        transport_->write(msg.payload(), msg.payload_size());
+    }
 }
 
 void Connection::onRecv(const uint8_t *data, std::size_t len) {

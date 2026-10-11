@@ -374,37 +374,6 @@ bool UsbTransport_PC::claim() {
         int r2 = impl_->clear_halt(impl_->devh, 0x81);
         fprintf(stderr, "[USB-HALT] clear_halt OUT(0x02) rc=%d IN(0x81) rc=%d\n", r1, r2);
     }
-
-    // Diagnostic: dump the active config descriptor's endpoints so we
-    // can verify the bulk OUT (0x02) / IN (0x81) addresses are right.
-    unsigned char cfg[512] = {0};
-    int drc = impl_->control_transfer(impl_->devh, 0x80, 0x06, 0x0200, 0,
-                                      cfg, sizeof(cfg), 1000);
-    if (drc > 0) {
-        int total = cfg[2] | (cfg[3] << 8);
-        fprintf(stderr, "[USB-CFG] total=%d numInterfaces=%d\n", total, cfg[4]);
-        int off = 0;
-        while (off + 2 <= drc && off < total) {
-            int len = cfg[off];
-            int type = cfg[off + 1];
-            if (len < 2 || off + len > total) break;
-            if (type == 0x04) {
-                fprintf(stderr, "[USB-IF] num=%d alt=%d numEp=%d class=%02x\n",
-                        cfg[off + 2], cfg[off + 3], cfg[off + 4], cfg[off + 5]);
-            } else if (type == 0x05) {
-                int addr = cfg[off + 2];
-                int attr = cfg[off + 3];
-                int mps = cfg[off + 4] | (cfg[off + 5] << 8);
-                fprintf(stderr, "[USB-EP] addr=0x%02x attr=0x%02x(%s) mps=%d\n",
-                        addr, attr,
-                        (attr & 3) == 2 ? "bulk" :
-                        (attr & 3) == 3 ? "int" : "ctrl", mps);
-            }
-            off += len;
-        }
-    } else {
-        fprintf(stderr, "[USB-CFG] GET_DESCRIPTOR failed rc=%d\n", drc);
-    }
     return true;
 }
 

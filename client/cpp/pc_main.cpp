@@ -128,13 +128,11 @@ int main(int argc, char **argv) {
     t->claim_opts = co;
     Connection *conn = nullptr;
     try {
-        std::printf("opening box (0x1314:0x1520)...\n");
-        t->open();
-        if (!t->claim()) throw std::runtime_error("claim interface 0 failed");
-        std::printf("claimed. starting protocol...\n");
+        std::printf("opening box (0x1314:0x1520) & starting protocol...\n");
         conn = new Connection(
             std::unique_ptr<UsbTransport>(reinterpret_cast<UsbTransport *>(t)), cb);
         conn->start();
+        std::printf("interface claimed & reader active.\n");
         std::printf("sending config burst (sendInit, %s)...\n",
                     encrypted ? "encrypted" : "plain");
         conn->sendInit(encrypted);
