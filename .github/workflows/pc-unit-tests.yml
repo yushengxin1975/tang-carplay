@@ -43,8 +43,8 @@ jobs:
             -o build/test.exe
           ./build/test.exe | tee test.log
 
-          # PC main (protocol bring-up tool, dynamic libusb)
-          "$CXX" -std=c++17 -O2 -g -Wall \
+          # PC main (protocol bring-up tool, static link to avoid DLL hell)
+          "$CXX" -std=c++17 -O2 -g -Wall -static \
             -Iclient/include -Iclient/cpp \
             client/cpp/protocol/aes_sbox_data.cpp \
             client/cpp/protocol/connection.cpp \
