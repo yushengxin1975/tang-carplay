@@ -351,7 +351,11 @@ bool UsbTransport_PC::claim() {
 #endif
     }
 
-    if (!o.no_set_config) {
+    // NOTE: libusb_set_configuration(1) resets gadget FIFOs on the box,
+    // causing bulk OUT (0x02) to permanently NAK/timeout rc=-7.
+    // The OS USB stack already configured the device during PnP.
+    // libBoxUSB.dll (official Carlinkit driver) only calls claim_interface(0).
+    if (o.set_config) {
         int rc = impl_->set_configuration(impl_->devh, 1);
         fprintf(stderr, "[USB-CFG] set_configuration(1) rc=%d\n", rc);
     }

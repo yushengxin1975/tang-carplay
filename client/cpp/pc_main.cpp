@@ -62,13 +62,14 @@ int main(int argc, char **argv) {
     // Default to plain mode; use --enc to enable CFB128 encryption.
     bool encrypted = false;
     UsbTransport_PC::ClaimOptions co;
-    // On Windows/WinUSB, set_interface_alt_setting(0,0) + clear_halt are
-    // configured for the box to accept bulk OUT writes.
-    co.alt_setting = true;
-    co.clear_halt = true;
+    // Default: clean minimal claim (matches official Carlinkit libBoxUSB.dll).
+    // Note: set_configuration(1) MUST NOT be called as it wedges the 2018 box gadget.
+    co.alt_setting = false;
+    co.clear_halt = false;
+    co.set_config = false;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--help") || !std::strcmp(argv[i], "-h")) {
-            std::printf("Usage: pc_main.exe [--plain] [--enc] [--no-alt] [--no-set-config] [--reset-reopen]\n");
+            std::printf("Usage: pc_main.exe [--plain] [--enc] [--alt-setting] [--clear-halt] [--set-config] [--reset-reopen]\n");
             return 0;
         }
         else if (!std::strcmp(argv[i], "--plain")) encrypted = false;
@@ -76,17 +77,17 @@ int main(int argc, char **argv) {
         else if (!std::strcmp(argv[i], "--reset-reopen")) co.reset_reopen = true;
         else if (!std::strcmp(argv[i], "--alt-setting")) co.alt_setting = true;
         else if (!std::strcmp(argv[i], "--clear-halt")) co.clear_halt = true;
-        else if (!std::strcmp(argv[i], "--no-set-config")) co.no_set_config = true;
+        else if (!std::strcmp(argv[i], "--set-config")) co.set_config = true;
         else if (!std::strcmp(argv[i], "--no-alt")) { co.alt_setting = false; co.clear_halt = false; }
     }
     std::printf("=== Carlinkit PC client (protocol bring-up, %s) ===\n",
                 encrypted ? "ENCRYPTED (CFB128)" : "plain");
-    if (co.reset_reopen || co.alt_setting || co.clear_halt || co.no_set_config) {
+    if (co.reset_reopen || co.alt_setting || co.clear_halt || co.set_config) {
         std::printf("claim options:%s%s%s%s\n",
                     co.reset_reopen  ? " reset-reopen" : "",
                     co.alt_setting   ? " alt-setting" : "",
                     co.clear_halt    ? " clear-halt" : "",
-                    co.no_set_config ? " no-set-config" : "");
+                    co.set_config    ? " set-config" : "");
     }
 
     std::ofstream vout("sample_video.bin", std::ios::binary);
