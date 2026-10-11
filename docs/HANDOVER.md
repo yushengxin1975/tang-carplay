@@ -89,15 +89,29 @@
 - **官方驱动印证**：
   - 逆向 AutoKit 原装驱动 `libBoxUSB.dll`，其 `host_init` 流程仅有两步：`open` + `claim_interface(0)`，**从未调用过 `set_configuration`、`alt_setting` 或 `clear_halt`**。
 - **协议模式**：
-  - 2018.06.20 固件仅支持明文协议；`pc_main` 默认已改为明文模式，并单次完整传输报文。
+  - 2018.06.20 固件仅支持明文协议；`pc_main` 默认已改为明文模式。
 
-**当前状态（commit `1b8658e`）**：
-- 默认初始化序列已彻底剔除 `set_configuration(1)`，只保留 `open` + `claim_interface(0)`。
-- 最终产物已下载到 `dist_final\build\pc_main.exe`，配套 `libusb-1.0.dll` 已就绪。
+### 4.7 🏆 终极协议解密：AutoKit 汇编逆向证实「两阶段独立传输」机制
+
+**根因完全破解（通过对原装 `AutoKit.exe` 反汇编精准定位 `host_send` 调用链）**：
+- **致命陷阱：单次合并写入导致 Gadget 端点 FIFO 截断假死**：
+  - 之前我们在 commit `68ff45d` 将 16 字节头部与载荷合并为单次 `bulk_transfer` 发送（例如 44 字节、51 字节）。
+  - **AutoKit 逆向反汇编事实**（`AutoKit.exe` 0x22864~0x22894 与 0x234d4~0x23530）：
+    1. **第 1 次调用 `host_send(header, 16)`**：先单独下发 16 字节头部；
+    2. **第 2 次调用 `host_send(payload, len)`**：若有载荷，再单独下发载荷（以最大 512 字节分片）。
+  - **FastCarPlay 源码印证**（`connection.cpp:435~439`）：也是先发 16 字节头部，再单独发载荷！
+  - **物理原理**：盒子 Linux Gadget 端驱动是以 USB URB 为单位读取。用户态守护进程先发起 `read(16)` 读取头部。若主机将 44 字节合并在一个 URB 内，Gadget 控制器只读出 16 字节，剩下的 28 字节被截断或遗留在端点硬件 FIFO 中，直接导致 Bulk OUT (`0x02`) 硬件假死进入死循环 NAK（`rc=-7`）。
+- **清理无用控制传输**：
+  - 移除了 `claim()` 内部用于调试的 `control_transfer(GET_DESCRIPTOR)`，与官方驱动行为完全一致。
+
+**当前状态（commit `91a5807`）**：
+- `Connection::send` 已改为先写 16 字节头部、后写载荷的两阶段独立传输。
+- CI 自动化构建与 36 项单元测试 100% 通过（Ubuntu + Windows 双绿）。
+- 最新二进制已部署至 `dist_final\build\pc_main.exe`。
 
 **下一步验证操作**：
-1. **Power cycle 盒子**：将盒子拔出 USB 口，等待 5~10 秒后重新插回（清除刚才测试时引发的硬件挂起；iPhone 保持连接并解锁）。
-2. **运行最终客户端**：`& "C:\tang-carplay\dist_final\build\pc_main.exe"`。
+1. **Power cycle 盒子**：将 Carlinkit 盒子从电脑 USB 拔出，等待 5 秒重新插回（清除上次单次写入导致的 FIFO 阻塞；iPhone 保持连接并解锁）。
+2. **运行最终客户端**：`& "C:\tang-carplay\dist_final\build\pc_main.exe"` 一次性送达两阶段配置突发并保持会话。
 
 ## 五、代码结构
 
