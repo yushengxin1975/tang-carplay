@@ -1,6 +1,6 @@
 # 项目交接文档 — BYD 唐 2015 Carlinkit 客户端开发
 
-> 生成时间：2026-10-09 | 最后 commit：见 `git log -1`
+> 生成时间：2026-10-11 | 最后 commit：`8ecb45c`（移除 reset）
 > 仓库：https://github.com/yushengxin1975/tang-carplay（私有）
 
 ## 一、项目目标
@@ -13,12 +13,13 @@
 |---|---|---|
 | 协议文档 | ✅ 完成 | `docs/CARLINKIT_PROTOCOL.md`（20 条消息、AES、状态机） |
 | 硬件档案 | ✅ 完成 | `docs/HARDWARE.md`（MT3360/OMX/Mali/USB 双 HCD） |
-| PC 协议层 C++ | ✅ 完成 | `client/cpp/protocol/`（Message/AES/Connection） |
-| PC 单元测试 | ✅ **23/23 全过** | 含 NIST FIPS-197 AES KAT，双平台 CI |
-| PC USB transport | ✅ 编译通过 | libusb-1.0 **动态加载**（零链接依赖） |
-| pc_main 控制台工具 | ✅ 编译通过 | 连盒子→握手→收流统计+采样落盘 |
+| PC 协议层 C++ | ✅ 完成 | `client/cpp/protocol/`（Message/AES-CBC+CFB128/Connection） |
+| PC 单元测试 | ✅ **36/36 全过** | 含 NIST FIPS-197 AES + NIST SP800-38A CFB128 KAT，双平台 CI |
+| PC USB transport | ✅ 编译通过 | libusb-1.0 **动态加载**（零链接依赖），OUT 端点 0x02 已修正 |
+| pc_main 控制台工具 | ✅ 编译通过 | `--enc`（默认）/`--plain` 双模式，连盒子→握手→收流统计+采样落盘 |
 | CE 客户端可执行 | ✅ **编译链接成功** | `carlinkit_ce.exe` ARM 80KB，CI 产出 |
-| **pc_main 真机测试** | ⏳ **待做** | 盒子已插 PC，运行 pc_main 验证协议 |
+| **CFB128 加密协议** | ✅ **已实现+测试** | FastCarPlay 兼容：seed 派生 key/IV，CFB128 流模式，36 测试全过 |
+| **pc_main 真机测试** | ⚠️ **阻塞** | 写入超时 rc=-7，盒子不读 OUT 端点（详见 §四 4.6） |
 | CE 上车集成 | ❌ 未开始 | M2 里程碑 |
 | 媒体层（视频/音频解码） | ❌ 未开始 | Phase B.1 后半段 |
 
@@ -62,16 +63,43 @@
 
 ### 4.4 Carlinkit 协议要点
 - 包格式：16 字节头（magic/length/type/typecheck）+ payload
-- magic：明文 `0x55AA55AA`，加密 `0x55BB55BB`（AES-128-CBC）
+- magic：明文 `0x55AA55AA`，加密 `0x55BB55BB`（AES-128-**CFB128**，非 CBC）
 - typecheck = ~type（完整性校验）
 - **typecheck 检查在 Message::parse 里，如果盒子实际不发 typecheck 需要放宽**
-- 默认 IV/Key：FastCarPlay 用 `ENCRYPTION_BASE` 字符串派生；具体密钥交换在 CMD_ENCRYPTION(240) 中协商——**尚未实现，需抓包确认**
+- **加密已实现**：`AESCipher::init_seed(seed)` 按 FastCarPlay 方案派生 key/IV
+  - base key = `"SkBRDy3gmrw1ieH0"`，`key[i] = base[(seed+i)%16]`
+  - IV 全零除 `IV[1]=seed&0xFF, IV[4]=(seed>>8)&0xFF, IV[9]=(seed>>16)&0xFF, IV[12]=(seed>>24)&0xFF`
+  - CFB128 流模式，任意长度无需填充，每条消息独立（fresh IV = fresh EVP context）
+  - `Connection::sendInit(true)` 先发 `CMD_ENCRYPTION(seed)`（明文），后续 File/Init/String 加密，Control/Heartbeat 明文
+- **USB 端点**（GET_DESCRIPTOR 实测）：interface 0 class=0xff，**EP 0x81 bulk IN mps=512**，**EP 0x02 bulk OUT mps=512**（早期代码错用 0x01，已修正）
 
 ### 4.5 patched AutoKit（临时可用方案）
 - 0x421FC 处 UTF-16LE 版本串改为 `2018.06.20-2021`（与盒子配套）
 - 补丁后版本警告仍显示但 **CarPlay 实际可用**
 - 备份在 `patch-backup/AutoKit_patched.exe`（SHA256 前缀 `050D8DB8`）
 - 已知缺陷（要修的）：音量不可调 / 音质差 / 分辨率低 / 需插拔两次
+
+### 4.6 ⚠️ 当前阻塞：pc_main 写入超时 rc=-7
+
+**现象**：pc_main 连盒子后，所有 `libusb_bulk_transfer` 写 EP 0x02 均超时（rc=-7 = `LIBUSB_ERROR_TIMEOUT`），盒子不读 OUT 端点。明文/加密模式都一样。盒子 IN 端点也无数据。
+
+**已排除的原因**：
+- ❌ 端点号错（已修正 0x01→0x02，rc 从 -5 NOT_FOUND 变 -7 TIMEOUT，说明端点对了但盒子不收）
+- ❌ `libusb_reset_device`（已移除 commit `8ecb45c`，移除后仍超时）
+- ❌ 盒子死机（断电重启后仍超时）
+- ❌ 加密 vs 明文（两种模式都超时）
+- ❌ WinUSB 驱动（设备管理器显示 OK，claim_interface 成功）
+
+**最可能的原因（按概率排序）**：
+1. **盒子需要先收某个 control transfer 才会开始读 bulk OUT**（如 SET_INTERFACE、或 vendor request 激活会话）。FastCarPlay 在 Linux 上可能由 libusb 隐式完成。**下一步：用 Wireshark + USBPcap 抓 FastCarPlay（Linux 树莓派）连盒子的前几个包，对比 control transfer 序列**。
+2. **WinUSB 管道未真正 "started"**：INF 绑定了接口但 pipe 可能需要显式 `WinUsb_Initialize` 或 alt-setting。检查 `libusb_set_interface_alt_setting(0, 0)`。
+3. **盒子固件版本太新**，协议变了（FastCarPlay settings.txt 警告 2024+ 固件可能需要加密，但我们加密模式也超时——可能加密握手格式不对，盒子直接不读）。
+4. **盒子需要 iPhone 先连上才开 OUT 端点**（不太可能，FastCarPlay 先跟 PC 握手再等 iPhone）。
+
+**调试方法**：
+- 在 Linux 树莓派上跑 FastCarPlay 原版连同一盒子，`usbmon` 或 Wireshark 抓包，对比前 10 个 USB 事务
+- 或在 Windows 上用 USBPcap 抓 AutoKit 连盒子的流量（AutoKit 能连成功）
+- 重点看：claim 后第一个 bulk OUT 之前有没有 control transfer
 
 ## 五、代码结构
 
@@ -83,19 +111,19 @@ tang-carplay/
 │   ├── cpp/
 │   │   ├── protocol/
 │   │   │   ├── message.h/.cpp       Message 类（序列化/解析/加解密路径）
-│   │   │   ├── aes_cipher.h         AES-128-CBC（零依赖，NIST 验证）
+│   │   │   ├── aes_cipher.h         AES-128-CBC + CFB128（零依赖，NIST 验证）
 │   │   │   ├── aes_sbox_data.cpp    S-box 表（**程序生成**，勿手编）
 │   │   │   ├── ce_compat.h          CE/PC 兼容层（Mutex/LockGuard）
 │   │   │   ├── ce_atoll_patch.h     atoll 声明注入（-include 用）
-│   │   │   ├── connection.h/.cpp    Connection 状态机 + 消息分发
-│   │   │   └── usb_transport.h/.cpp USB 抽象（CE=UKW / PC=libusb 动态）
+│   │   │   ├── connection.h/.cpp    Connection 状态机 + sendInit(encrypted) + 消息分发
+│   │   │   └── usb_transport.h/.cpp USB 抽象（CE=UKW / PC=libusb 动态，OUT ep=0x02）
 │   │   ├── ce_main.cpp              CE GUI 入口（零写卡，窗体+状态+事件）
 │   │   ├── ce_main.h                CE/PC 条件编译 shim
 │   │   ├── ce_stubs.cpp             CE 符号 stub（atoll）
 │   │   └── pc_main.cpp              PC 控制台工具（连盒子验证协议）
 │   ├── test/
 │   │   ├── fake_transport.h         内存 transport（测试用）
-│   │   └── test_protocol.cpp        23 个断言（4 组测试）
+│   │   └── test_protocol.cpp        36 个断言（7 组测试，含 CFB128 KAT）
 │   ├── build_ce.sh                  CeGCC 编译脚本（CI 用）
 │   └── README.md                    构建说明
 ├── probe/                           ← 零写卡系统探针（已完成，上车验证过）
@@ -134,13 +162,15 @@ sudo apt install g++ libusb-1.0-0
 g++ -std=c++17 -O2 -Wall -Iclient/include -Iclient/cpp \
     client/cpp/protocol/{aes_sbox_data,connection,usb_transport}.cpp \
     client/cpp/pc_main.cpp -o pc_main
-./pc_main    # 盒子插 USB 口运行
+./pc_main              # 默认加密模式（2024+ 固件可能要求）
+./pc_main --plain      # 强制明文模式（旧固件）
+./pc_main --enc        # 显式加密模式
 
 # Windows（需 MinGW g++ + libusb-1.0.dll）
 g++ -std=c++17 -O2 -Wall -Iclient/include -Iclient/cpp \
     client/cpp/protocol/{aes_sbox_data,connection,usb_transport}.cpp \
     client/cpp/pc_main.cpp -o pc_main.exe
-./pc_main.exe
+./pc_main.exe          # 盒子插 USB 口运行
 ```
 
 ### 6.2 完整环境（含 CE 编译）
@@ -152,14 +182,24 @@ g++ -std=c++17 -O2 -Wall -Iclient/include -Iclient/cpp \
 g++ -std=c++17 -O2 -Wall -Iclient/include -Iclient/cpp \
     client/cpp/protocol/{aes_sbox_data,connection,usb_transport}.cpp \
     client/test/test_protocol.cpp -o test && ./test
-# 期望：=== 23 passed, 0 failed ===
+# 期望：=== 36 passed, 0 failed ===
 ```
 
 ## 七、下一步工作（按优先级排序）
 
-### M1.5 — pc_main 真机协议验证（盒子已插 PC，立即可做）
+### M1.5a — 解决写入超时（当前阻塞，最高优先级）
+
+**问题**：pc_main 写 EP 0x02 全部 rc=-7 超时，盒子不读 OUT 端点（详见 §4.6）。
+
+**推荐路径**（按成本排序）：
+1. **抓包对比**（最快）：在 Windows 装 [USBPcap](https://usbpcap.codeplex.com/)，抓 AutoKit 连盒子的前 20 个 USB 事务。AutoKit 能连成功，看它在 claim 后第一个 bulk OUT 之前发了什么 control transfer。把缺失的 control transfer 加到 `UsbTransport_PC::claim()` 里。
+2. **Linux 对照**：树莓派上跑 FastCarPlay 原版连同一盒子，`sudo modprobe usbmon` + `wireshark` 抓包。对比 Linux 和 Windows 的 USB 事务序列差异。
+3. **试 alt-setting**：在 claim 后加 `libusb_set_interface_alt_setting(devh, 0, 0)`，有些设备需要显式 SET_INTERFACE 才激活 pipe。
+4. **试不 set_configuration**：盒子可能已配置，`set_configuration(1)` 可能反而打乱状态。注释掉试试。
+
+### M1.5b — pc_main 真机协议验证（解决超时后）
 ```bash
-./pc_main
+./pc_main              # 默认加密
 # 预期输出：
 #   opening box (0x1314:0x1520)...
 #   claimed. starting protocol...
@@ -170,8 +210,8 @@ g++ -std=c++17 -O2 -Wall -Iclient/include -Iclient/cpp \
 **可能遇到的问题**：
 - Linux 权限：`sudo ./pc_main` 或写 udev 规则
 - Windows 需要 libusb-1.0.dll（libusb.info 下载 MinGW 64-bit 版）
-- 如果盒子不响应 CMD_OPEN：可能需要先发 ENCRYPTION 密钥交换（抓 AutoKit USB 流量对比）
 - 如果收到数据但 typecheck 不匹配：放宽 Message::parse 的 typecheck 检查
+- 如果加密握手失败：对比 FastCarPlay `aes_cipher.cpp` 的 seed 派生，确认 base key 和 IV 字节序
 
 ### M2 — CE 上车集成
 1. 部署包：TF 卡 `gps_byd/` 下放 `carlinkit_ce.exe`（改名 startup.exe）+ `ceusbkwrapper.dll` + `USBKIT.DLL`
@@ -211,4 +251,24 @@ git log --oneline -20          # 最近提交
 git branch -a                  # 只有 master
 gh run list                    # CI 历史
 gh run download <id> --name tang-carplay-ce-client --dir dist  # 下载 CE 产物
+gh run download <id> --name pc-windows-latest-<id> --dir dist  # 下载 PC 产物
 ```
+
+## 十一、本次会话提交记录（2026-10-10 ~ 10-11）
+
+| commit | 说明 |
+|---|---|
+| `090e28c` | USB transport 幂等 open/claim |
+| `af8ec74` | readPump 超时(-7)/溢出(-8)继续泵送 |
+| `fae90d6` | stdout 无缓冲（日志不丢） |
+| `41b7dc5` | 握手：Message 工厂 + sendInit 配置突发 |
+| `f23e7ae` | send(const Message&) 重载 + String 接 c_str |
+| `bf17cd9` | 诊断：端点 dump + 写状态日志 |
+| `f2075bc` | **OUT 端点 0x01→0x02 修正**（rc -5→-7） |
+| `2451f93` | 加 libusb_reset_device（后移除） |
+| `2d66c43` | **CFB128 加密协议实现**（FastCarPlay 兼容） |
+| `d585b81` | 修 CFB128 解密反馈（IV←密文非明文） |
+| `8ecb45c` | 移除 reset（Windows 上致 OUT 端点 NAK） |
+
+**CI 状态**：两个 workflow 全绿，`36 passed / 0 failed`（ubuntu + windows 双平台）。
+**单元测试覆盖**：AES-CBC NIST KAT、AES-CFB128 NIST SP800-38A KAT、CFB seed roundtrip、Connection 级加密收发、Message 序列化/解析、Connection 生命周期。
