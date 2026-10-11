@@ -2,6 +2,7 @@
 #include "message.h"
 
 #include <cstring>
+#include <ctime>
 
 namespace carlinkit {
 
@@ -34,6 +35,42 @@ void Connection::start() {
     if (cbs_.on_state) cbs_.on_state(ConnState::NO_DEVICE);
 }
 
+void Connection::sendInit() {
+    // Mirrors FastCarPlay Connection::sendInit() with default settings
+    // (encryption off, left-hand-drive, night auto, weak charge, wifi5,
+    // bt audio off, autoconnect on, micType 1, dpi 120, androidMode 1).
+    const int32_t syncTime = static_cast<int32_t>(std::time(nullptr));
+    const int drivePosition = 0;  // left-hand drive
+    const int nightMode = 2;      // auto
+
+    // androidMode 1 -> 800x480 base, scaled to Settings 1024x576 window:
+    // scale = min(800/1024, 480/576) = 0.78125 -> 800x450
+    const int autoSizeW = 800, autoSizeH = 450;
+
+    send(Message::File("/tmp/screen_dpi", 120));
+    send(Message::File("/etc/android_work_mode", 1));
+    send(Message::Init(1024, 576, 60));
+    send(Message::String(Cmd::JSON_CONTROL,
+        "{\"syncTime\":" + std::to_string(syncTime) + ",\"mediaDelay\":300,"
+        "\"drivePosition\":" + std::to_string(drivePosition) + ","
+        "\"androidAutoSizeW\":" + std::to_string(autoSizeW) + ","
+        "\"androidAutoSizeH\":" + std::to_string(autoSizeH) + ","
+        "\"HiCarConnectMode\":0,\"GNSSCapability\":7,\"DashboardInfo\":1,"
+        "\"UseBTPhone\":0}"));
+    send(Message::String(Cmd::DAYNIGHT,
+        "{\"DayNightMode\":" + std::to_string(nightMode) + "}"));
+
+    send(Message::File("/tmp/night_mode", nightMode));
+    send(Message::File("/tmp/charge_mode", 0));  // weak charge
+    send(Message::File("/etc/box_name", "CarPlay"));
+    send(Message::File("/tmp/hand_drive_mode", drivePosition));
+
+    send(Message::Control(7));    // microphone
+    send(Message::Control(25));   // wifi 5GHz
+    send(Message::Control(23));   // bluetooth audio off
+    send(Message::Control(1002)); // autoconnect
+}
+
 void Connection::stop() {
     if (transport_) transport_->close();
     {
@@ -58,7 +95,13 @@ void Connection::send(Cmd cmd, const std::vector<uint8_t> &payload) {
         msg = Message(cmd, cipher_enabled_, padded.size(), enc.data());
     }
     auto out = msg.serialize();
-    transport_->write(out.data(), out.size());
+    // FastCarPlay sends the 16-byte header and the payload as two separate
+    // bulk transfers; the short header packet terminates the first transfer
+    // so the Box's reader always sees a clean header first.
+    transport_->write(out.data(), sizeof(Header));
+    if (out.size() > sizeof(Header))
+        transport_->write(out.data() + sizeof(Header),
+                          out.size() - sizeof(Header));
 }
 
 void Connection::onRecv(const uint8_t *data, std::size_t len) {

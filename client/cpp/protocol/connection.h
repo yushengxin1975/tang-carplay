@@ -56,6 +56,11 @@ public:
     // Throws on transport failure.
     void start();
 
+    // Send the FastCarPlay-style config burst (encryption-disabled path):
+    // screen_dpi, android_work_mode, CMD_OPEN(28B), JSON_CONTROL, DAYNIGHT,
+    // night/charge/box_name/hand_drive files, then CONTROL mic/wifi/bt/auto.
+    void sendInit();
+
     // Stop session: cancel reads, release endpoints, close transport.
     void stop();
 

@@ -103,6 +103,9 @@ int main() {
         conn = new Connection(
             std::unique_ptr<UsbTransport>(reinterpret_cast<UsbTransport *>(t)), cb);
         conn->start();
+        std::printf("sending config burst (sendInit)...\n");
+        conn->sendInit();
+        std::printf("config burst sent.\n");
     } catch (const std::exception &e) {
         std::printf("FATAL: %s\n", e.what());
         return 1;
@@ -110,13 +113,20 @@ int main() {
 
     std::printf("protocol up. plug iPhone into the box. Ctrl+C to stop.\n\n");
 
-    // Main read pump + periodic stats
+    // Main read pump + periodic stats + heartbeat
     uint64_t last_v = 0, last_a = 0;
     int stat_ticks = 0;
+    int hb_ticks = 0;
     while (g_run) {
         if (!t->readPump(200)) {
             std::printf("USB error, exiting\n");
             break;
+        }
+        // Heartbeat every ~3s (FastCarPlay PROTOCOL_HEARTBEAT_DELAY) keeps
+        // the Box session alive even before it starts talking.
+        if (++hb_ticks >= 15) {
+            hb_ticks = 0;
+            conn->send(Cmd::HEARTBEAT);
         }
         if (++stat_ticks >= 25) {  // ~5s at 200ms
             stat_ticks = 0;

@@ -66,6 +66,73 @@ public:
         }
     }
 
+    // ----- Static factories (mirror FastCarPlay message.h) -----
+
+    // CMD_OPEN with the 28-byte host-info payload the Box expects:
+    // [0]=width [4]=height [8]=fps [12]=5 [16]=49152 [20]=2 [24]=2 (all LE)
+    static Message Init(int width, int height, int fps) {
+        Message m(Cmd::OPEN, /*encrypt=*/true, 28);
+        m.write_u32(0, static_cast<uint32_t>(width));
+        m.write_u32(4, static_cast<uint32_t>(height));
+        m.write_u32(8, static_cast<uint32_t>(fps));
+        m.write_u32(12, 5);
+        m.write_u32(16, 49152);
+        m.write_u32(20, 2);
+        m.write_u32(24, 2);
+        return m;
+    }
+
+    // CMD_SEND_FILE: [fn_len LE][filename incl '\0'][content_len LE][content]
+    static Message File(const char *filename, const uint8_t *data, uint32_t length) {
+        const uint32_t fn_len = static_cast<uint32_t>(std::strlen(filename)) + 1;
+        Message m(Cmd::SEND_FILE, /*encrypt=*/true,
+                  static_cast<int32_t>(4 + fn_len + 4 + length));
+        uint8_t *p = m.mutable_payload();
+        write_u32_le(p, fn_len);
+        p += 4;
+        std::memcpy(p, filename, fn_len);
+        p += fn_len;
+        write_u32_le(p, length);
+        p += 4;
+        if (length > 0 && data)
+            std::memcpy(p, data, length);
+        return m;
+    }
+
+    // String value: ASCII bytes only, no trailing '\0' (max 16)
+    static Message File(const char *filename, const char *value) {
+        const uint32_t len = static_cast<uint32_t>(std::strlen(value));
+        if (len > 16)
+            throw std::invalid_argument("Message::File: string too long (max 16)");
+        return File(filename, reinterpret_cast<const uint8_t *>(value), len);
+    }
+
+    // Single 32-bit integer value
+    static Message File(const char *filename, int value) {
+        uint8_t buf[4];
+        write_u32_le(buf, static_cast<uint32_t>(value));
+        return File(filename, buf, 4);
+    }
+
+    // Raw string payload (no trailing '\0')
+    static Message String(Cmd cmd, const char *str) {
+        const int32_t len = static_cast<int32_t>(std::strlen(str));
+        Message m(cmd, /*encrypt=*/true, len);
+        if (len > 0)
+            std::memcpy(m.mutable_payload(), str, static_cast<std::size_t>(len));
+        return m;
+    }
+
+    // CMD_CONTROL: 4-byte LE value, sent unencrypted (FastCarPlay default)
+    static Message Control(uint32_t value) {
+        return Message(Cmd::CONTROL, value, /*encrypt=*/false);
+    }
+
+    // CMD_ENCRYPTION: 4-byte LE seed, sent unencrypted
+    static Message Encryption(uint32_t seed) {
+        return Message(Cmd::ENCRYPTION, seed, /*encrypt=*/false);
+    }
+
     // Accessors
     Cmd type() const { return static_cast<Cmd>(hdr_.type); }
     bool encrypted() const { return encrypted_; }
