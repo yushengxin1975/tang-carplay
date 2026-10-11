@@ -36,10 +36,22 @@ void Connection::start() {
     if (cbs_.on_state) cbs_.on_state(ConnState::NO_DEVICE);
 }
 
-void Connection::sendInit() {
+void Connection::sendInit(bool encrypted) {
     // Mirrors FastCarPlay Connection::sendInit() with default settings
-    // (encryption off, left-hand-drive, night auto, weak charge, wifi5,
-    // bt audio off, autoconnect on, micType 1, dpi 120, androidMode 1).
+    // (left-hand-drive, night auto, weak charge, wifi5, bt audio off,
+    // autoconnect on, micType 1, dpi 120, androidMode 1).
+    //
+    // Encrypted mode (FastCarPlay): seed = rand() after srand(time);
+    // CMD_ENCRYPTION(seed) is sent FIRST and unencrypted; the CFB128
+    // key/IV are derived from the seed; all subsequent File/Init/String
+    // messages are encrypted (Control/Heartbeat stay plain).
+    if (encrypted) {
+        std::srand(static_cast<unsigned>(std::time(nullptr)));
+        const uint32_t seed = static_cast<uint32_t>(std::rand());
+        cipher_.init_seed(seed);
+        cipher_enabled_ = true;
+        send(Message::Encryption(seed));
+    }
     const int32_t syncTime = static_cast<int32_t>(std::time(nullptr));
     const int drivePosition = 0;  // left-hand drive
     const int nightMode = 2;      // auto
@@ -91,15 +103,14 @@ void Connection::send(const Message &in) {
     if (!transport_) return;
     Message msg = in;
     if (cipher_enabled_ && msg.encrypted() && msg.payload_size() > 0) {
-        // Pad to 16-byte boundary (AES block)
-        std::vector<uint8_t> padded(msg.payload(), msg.payload() + msg.payload_size());
-        while (padded.size() % 16 != 0) padded.push_back(0);
-        std::vector<uint8_t> enc(padded.size());
+        // CFB128 stream mode: no padding needed, any length.
+        std::vector<uint8_t> enc(msg.payload_size());
         char err[128];
-        if (!cipher_.encrypt(padded.data(), padded.size(), enc.data(), err)) {
+        if (!cipher_.encrypt_cfb(msg.payload(), msg.payload_size(), enc.data(), err)) {
             throw std::runtime_error(std::string("Connection::send encrypt: ") + err);
         }
-        msg = Message(msg.type(), false, static_cast<int32_t>(padded.size()), enc.data());
+        msg = Message(msg.type(), false, static_cast<int32_t>(enc.size()), enc.data());
+        msg.mark_encrypted();  // magic -> MAGIC_ENC (box reads encrypted frames)
     }
     auto out = msg.serialize();
     // FastCarPlay sends the 16-byte header and the payload as two separate
@@ -128,11 +139,11 @@ void Connection::onRecv(const uint8_t *data, std::size_t len) {
 
         Message msg = Message::parse(data + off, frame);
         if (msg.encrypted()) {
-            if (msg.payload_size() == 0 || msg.payload_size() % 16 != 0)
-                break;  // malformed encrypted length; drop rest
+            if (msg.payload_size() == 0)
+                break;  // malformed encrypted frame; drop rest
             std::vector<uint8_t> plain(msg.payload_size());
             char err[128];
-            if (!cipher_.decrypt(msg.payload(), msg.payload_size(), plain.data(), err))
+            if (!cipher_.decrypt_cfb(msg.payload(), msg.payload_size(), plain.data(), err))
                 break;
             msg = Message(msg.type(), false,
                           static_cast<int32_t>(plain.size()), plain.data());

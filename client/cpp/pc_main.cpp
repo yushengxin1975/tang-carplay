@@ -52,12 +52,21 @@ static const char *cmdName(uint32_t c) {
     }
 }
 
-int main() {
+int main(int argc, char **argv) {
     std::signal(SIGINT, onSigint);
     // Unbuffered stdout: when redirected to a file, printf output must
     // land immediately or a killed process loses the whole log.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    std::printf("=== Carlinkit PC client (protocol bring-up) ===\n");
+    // Encrypted mode by default: 2024+ Carlinkit firmware may REQUIRE the
+    // encrypted protocol (FastCarPlay settings.txt warning). --plain forces
+    // the legacy unencrypted handshake.
+    bool encrypted = true;
+    for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--plain")) encrypted = false;
+        else if (!std::strcmp(argv[i], "--enc")) encrypted = true;
+    }
+    std::printf("=== Carlinkit PC client (protocol bring-up, %s) ===\n",
+                encrypted ? "ENCRYPTED (CFB128)" : "plain");
 
     std::ofstream vout("sample_video.bin", std::ios::binary);
     std::ofstream aout("sample_audio.bin", std::ios::binary);
@@ -103,8 +112,9 @@ int main() {
         conn = new Connection(
             std::unique_ptr<UsbTransport>(reinterpret_cast<UsbTransport *>(t)), cb);
         conn->start();
-        std::printf("sending config burst (sendInit)...\n");
-        conn->sendInit();
+        std::printf("sending config burst (sendInit, %s)...\n",
+                    encrypted ? "encrypted" : "plain");
+        conn->sendInit(encrypted);
         std::printf("config burst sent.\n");
     } catch (const std::exception &e) {
         std::printf("FATAL: %s\n", e.what());

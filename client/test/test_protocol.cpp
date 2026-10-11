@@ -102,6 +102,85 @@ static void test_message_encrypted() {
            "decrypted plaintext matches original");
 }
 
+// --- 3b. NIST SP 800-38A F.4.1 CFB128-AES128.Encrypt known-answer test ---
+// key=2b7e1516..., IV=000102...0f, 2 blocks of plaintext/ciphertext.
+static void test_aes_cfb_nist_kat() {
+    std::printf("[test_aes_cfb_nist_kat]\n");
+    const uint8_t key[16] = {0x2b,0x7e,0x15,0x16,0x28,0xae,0xd2,0xa6,
+                             0xab,0xf7,0x15,0x88,0x09,0xcf,0x4f,0x3c};
+    const uint8_t iv[16]  = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+                             0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f};
+    const uint8_t pt[32]  = {0x6b,0xc1,0xbe,0xe2,0x2e,0x40,0x9f,0x96,
+                             0xe9,0x3d,0x7e,0x11,0x73,0x93,0x17,0x2a,
+                             0xae,0x2d,0x8a,0x57,0x1e,0x03,0xac,0x9c,
+                             0x9e,0xb7,0x6f,0xac,0x45,0xaf,0x8e,0x51};
+    const uint8_t want[32]= {0x3b,0x3f,0xd9,0x2e,0xb7,0x2d,0xad,0x20,
+                             0x33,0x34,0x49,0xf8,0xe8,0x3c,0xfb,0x4a,
+                             0xc8,0xa6,0x45,0x37,0xa0,0xb3,0xa9,0x3f,
+                             0xcd,0xe3,0xcd,0xad,0x9f,0x1c,0xe5,0x8b};
+    uint8_t ct[32], rt[32];
+    AESCipher c;
+    c.init_cfb(key, iv);
+    EXPECT(c.encrypt_cfb(pt, 32, ct), "CFB encrypt runs");
+    EXPECT(std::memcmp(ct, want, 32) == 0, "NIST SP800-38A CFB128 ciphertext matches KAT");
+    EXPECT(c.decrypt_cfb(ct, 32, rt), "CFB decrypt runs");
+    EXPECT(std::memcmp(rt, pt, 32) == 0, "CFB decrypt returns plaintext");
+}
+
+// --- 3c. CFB128 roundtrip with odd (non-block) length + seed derivation ---
+static void test_aes_cfb_roundtrip() {
+    std::printf("[test_aes_cfb_roundtrip]\n");
+    const uint32_t seed = 0x12345678u;
+    uint8_t pt[37];
+    for (int i = 0; i < 37; ++i) pt[i] = (uint8_t)(i * 7 + 3);
+    AESCipher c;
+    c.init_seed(seed);
+    uint8_t ct[37], rt[37];
+    EXPECT(c.encrypt_cfb(pt, 37, ct), "CFB encrypt 37 bytes ok (no padding)");
+    EXPECT(c.decrypt_cfb(ct, 37, rt), "CFB decrypt 37 bytes ok");
+    EXPECT(std::memcmp(rt, pt, 37) == 0, "CFB seed roundtrip plaintext matches");
+    // Same seed must reproduce the same keystream (fresh IV per message).
+    uint8_t ct2[37];
+    AESCipher c2;
+    c2.init_seed(seed);
+    c2.encrypt_cfb(pt, 37, ct2);
+    EXPECT(std::memcmp(ct2, ct, 37) == 0, "same seed reproduces ciphertext");
+    // Different seed must produce different keystream.
+    AESCipher c3;
+    c3.init_seed(seed + 1);
+    uint8_t ct3[37];
+    c3.encrypt_cfb(pt, 37, ct3);
+    EXPECT(std::memcmp(ct3, ct, 37) != 0, "different seed changes ciphertext");
+}
+
+// --- 3d. Connection-level encrypted send via FakeTransport ---
+static void test_connection_encrypted() {
+    std::printf("[test_connection_encrypted]\n");
+    auto ft = std::make_unique<FakeTransport>();
+    FakeTransport *raw = ft.get();
+    Connection conn(std::move(ft), InboundCallbacks{});
+    conn.start();
+    const uint32_t seed = 42;
+    conn.enableEncryption(seed);
+    const char *text = "{\"syncTime\":1700000000}";
+    conn.send(Message::String(Cmd::JSON_CONTROL, text));
+
+    // Read back what was written: header (16B) + encrypted payload.
+    const auto &sent = raw->sent();
+    EXPECT(sent.size() > 16, "encrypted frame written to transport");
+    EXPECT(sent[0] == 0xBB && sent[1] == 0x55, "outbound magic is MAGIC_ENC");
+    uint32_t len = Message::read_u32_le(sent.data() + 4);
+    EXPECT((int)len == (int)std::strlen(text), "length = plaintext length (CFB, no padding)");
+
+    // Decrypt with the same seed and compare.
+    AESCipher c;
+    c.init_seed(seed);
+    std::vector<uint8_t> plain(len);
+    c.decrypt_cfb(sent.data() + 16, len, plain.data());
+    EXPECT(std::memcmp(plain.data(), text, len) == 0,
+           "Connection-level CFB roundtrip matches");
+}
+
 // --- 4. Connection lifecycle via FakeTransport ---
 static int s_state_changes = 0;
 static ConnState s_last_state = ConnState::UNKNOWN;
@@ -173,6 +252,9 @@ int main() {
     test_aes_nist_kat();
     test_message_roundtrip();
     test_message_encrypted();
+    test_aes_cfb_nist_kat();
+    test_aes_cfb_roundtrip();
+    test_connection_encrypted();
     test_lifecycle();
     std::printf("=== %d passed, %d failed ===\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;

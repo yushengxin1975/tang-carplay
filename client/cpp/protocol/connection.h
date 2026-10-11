@@ -56,10 +56,22 @@ public:
     // Throws on transport failure.
     void start();
 
-    // Send the FastCarPlay-style config burst (encryption-disabled path):
+    // Send the FastCarPlay-style config burst:
     // screen_dpi, android_work_mode, CMD_OPEN(28B), JSON_CONTROL, DAYNIGHT,
     // night/charge/box_name/hand_drive files, then CONTROL mic/wifi/bt/auto.
-    void sendInit();
+    // With encrypted=true: first sends CMD_ENCRYPTION(seed) unencrypted,
+    // derives the CFB128 key/IV from the seed (FastCarPlay scheme), and
+    // encrypts all subsequent File/Init/String messages (Control/Heartbeat
+    // stay plain, matching FastCarPlay defaults).
+    void sendInit(bool encrypted = false);
+
+    // Enable encrypted mode with an explicit seed (key/IV derived from it).
+    void enableEncryption(uint32_t seed) {
+        cipher_.init_seed(seed);
+        cipher_enabled_ = true;
+    }
+
+    bool encryption_enabled() const { return cipher_enabled_; }
 
     // Stop session: cancel reads, release endpoints, close transport.
     void stop();

@@ -30,6 +30,10 @@ public:
     static constexpr int NUM_ROUND = 10;
     static constexpr int RKLEN = (NUM_ROUND + 1) * BLOCK; // 176
 
+    // FastCarPlay ENCRYPTION_BASE (connection.h): 16-byte base key from
+    // which the session key is derived by rotation with the seed.
+    static constexpr char BASE_KEY[KEYLEN + 1] = "SkBRDy3gmrw1ieH0";
+
     AESCipher() : ready_(false) {}
 
     AESCipher(const uint8_t *key16, const uint8_t *iv16 = nullptr) { init(key16, iv16); }
@@ -75,6 +79,51 @@ public:
         return true;
     }
 
+    // ---- CFB128 (OpenSSL EVP_aes_128_cfb compatible) ----
+    // Stream mode: any length, no padding. Both directions use the block
+    // ENCRYPT function only. Keystream restarts from IV on every call
+    // (FastCarPlay creates a fresh EVP context per message).
+
+    // Raw key/IV init for CFB (used by tests / manual keying).
+    void init_cfb(const uint8_t *key16, const uint8_t *iv16) {
+        if (!key16 || !iv16) throw std::runtime_error("AESCipher: null key/iv");
+        expand_key(key16);
+        memcpy(iv_, iv16, BLOCK);
+        ready_ = true;
+    }
+
+    // FastCarPlay seed derivation (aes_cipher.cpp):
+    //   key[i] = BASE_KEY[(seed + i) % 16]
+    //   IV zero except IV[1]=seed&0xFF, IV[4]=(seed>>8)&0xFF,
+    //   IV[9]=(seed>>16)&0xFF, IV[12]=(seed>>24)&0xFF
+    void init_seed(uint32_t seed) {
+        uint8_t key[KEYLEN];
+        for (int i = 0; i < KEYLEN; ++i)
+            key[i] = static_cast<uint8_t>(BASE_KEY[(seed + i) % KEYLEN]);
+        uint8_t iv[BLOCK] = {0};
+        iv[1]  = static_cast<uint8_t>(seed);
+        iv[4]  = static_cast<uint8_t>(seed >> 8);
+        iv[9]  = static_cast<uint8_t>(seed >> 16);
+        iv[12] = static_cast<uint8_t>(seed >> 24);
+        init_cfb(key, iv);
+    }
+
+    // CFB128 encrypt. Any length.
+    bool encrypt_cfb(const uint8_t *in, std::size_t len, uint8_t *out, char *err = nullptr) {
+        if (!ready_) return fail(err, "not initialised");
+        if (!in || !out || len == 0) return fail(err, "encrypt_cfb: empty input");
+        cfb_crypt(in, len, out);
+        return true;
+    }
+
+    // CFB128 decrypt. Any length (same keystream path as encrypt).
+    bool decrypt_cfb(const uint8_t *in, std::size_t len, uint8_t *out, char *err = nullptr) {
+        if (!ready_) return fail(err, "not initialised");
+        if (!in || !out || len == 0) return fail(err, "decrypt_cfb: empty input");
+        cfb_crypt(in, len, out);
+        return true;
+    }
+
     static bool fail(char *err, const char *msg) {
         if (err) strncpy(err, msg, 127), err[127] = 0;
         return false;
@@ -90,6 +139,26 @@ private:
     uint8_t rk_[RKLEN];
     uint8_t iv_[BLOCK];
     uint8_t chain_[BLOCK];
+
+    // CFB128 core: keystream = E(IV); out = in XOR keystream; IV <- ciphertext.
+    // Identical for encrypt and decrypt (CFB uses the block ENCRYPT function
+    // in both directions). Fresh IV per call = fresh EVP context per message.
+    void cfb_crypt(const uint8_t *in, std::size_t len, uint8_t *out) {
+        uint8_t iv[BLOCK];
+        memcpy(iv, iv_, BLOCK);
+        std::size_t off = 0;
+        while (off < len) {
+            uint8_t ks[BLOCK];
+            encrypt_block(iv, ks);
+            std::size_t n = (len - off < BLOCK) ? (len - off) : BLOCK;
+            for (std::size_t i = 0; i < n; ++i) {
+                uint8_t c = static_cast<uint8_t>(in[off + i] ^ ks[i]);
+                out[off + i] = c;
+                iv[i] = c;  // feedback ciphertext (encrypt and decrypt alike)
+            }
+            off += n;
+        }
+    }
 
     // ---- GF(2^8) multiply (xtime-based,Russian peasant) ----
     static uint8_t gmul(uint8_t a, uint8_t b) {
