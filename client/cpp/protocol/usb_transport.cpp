@@ -352,12 +352,14 @@ void UsbTransport_PC::submitRead(std::size_t, RecvCallback cb) {
 void UsbTransport_PC::write(const uint8_t *data, std::size_t len) {
     if (!impl_->devh) return;
     int tx = 0;
-    int rc = impl_->bulk_transfer(impl_->devh, 0x01,
+    // Box bulk OUT is 0x02 (confirmed via GET_DESCRIPTOR dump: 0x81 IN,
+    // 0x02 OUT, both bulk mps=512). Writing 0x01 fails rc=-5 NOT_FOUND.
+    int rc = impl_->bulk_transfer(impl_->devh, 0x02,
                          const_cast<unsigned char *>(data),
                          static_cast<int>(len), &tx, 1000);
     // Diagnostic: surface write failures (previously silently ignored).
     if (rc != 0 || tx != static_cast<int>(len))
-        fprintf(stderr, "[USB-WRITE] ep=0x01 len=%zu tx=%d rc=%d\n",
+        fprintf(stderr, "[USB-WRITE] ep=0x02 len=%zu tx=%d rc=%d\n",
                 len, tx, rc);
 }
 
