@@ -8,6 +8,7 @@
 
 #include "usb_transport.h"
 
+#include <cstdio>
 #include <cstring>
 
 #if defined(__MINGW32CE__) || defined(_WIN32_WCE)
@@ -200,6 +201,9 @@ struct UsbTransport_PC::Impl {
     int  (*bulk_transfer)(void *, unsigned char, unsigned char *,
                           int, int *, unsigned) = nullptr;
     int  (*set_configuration)(void *, int) = nullptr;
+    int  (*control_transfer)(void *, unsigned char, unsigned char,
+                             unsigned short, unsigned short, unsigned char *,
+                             unsigned short, unsigned) = nullptr;
 };
 
 UsbTransport_PC::UsbTransport_PC() : impl_(new Impl) {}
@@ -257,6 +261,7 @@ void UsbTransport_PC::open(uint16_t vid, uint16_t pid) {
     SYM(release_interface,  "libusb_release_interface");
     SYM(bulk_transfer,      "libusb_bulk_transfer");
     SYM(set_configuration,  "libusb_set_configuration");
+    SYM(control_transfer,   "libusb_control_transfer");
 #undef SYM
 
     if (impl_->init(&impl_->ctx) != 0)
@@ -303,6 +308,36 @@ bool UsbTransport_PC::claim() {
     }
     if (impl_->claim_interface(impl_->devh, 0) == 0) {
         impl_->claimed = true;
+        // Diagnostic: dump the active config descriptor's endpoints so we
+        // can verify the bulk OUT (0x01) / IN (0x81) addresses are right.
+        unsigned char cfg[512] = {0};
+        int crc = impl_->control_transfer(impl_->devh, 0x80, 0x06, 0x0200, 0,
+                                          cfg, sizeof(cfg), 1000);
+        if (crc > 0) {
+            int total = cfg[2] | (cfg[3] << 8);
+            fprintf(stderr, "[USB-CFG] total=%d numInterfaces=%d\n", total, cfg[4]);
+            int off = 0;
+            while (off + 2 <= crc && off < total) {
+                int len = cfg[off];
+                int type = cfg[off + 1];
+                if (len < 2 || off + len > total) break;
+                if (type == 0x04) {
+                    fprintf(stderr, "[USB-IF] num=%d alt=%d numEp=%d class=%02x\n",
+                            cfg[off + 2], cfg[off + 3], cfg[off + 4], cfg[off + 5]);
+                } else if (type == 0x05) {
+                    int addr = cfg[off + 2];
+                    int attr = cfg[off + 3];
+                    int mps = cfg[off + 4] | (cfg[off + 5] << 8);
+                    fprintf(stderr, "[USB-EP] addr=0x%02x attr=0x%02x(%s) mps=%d\n",
+                            addr, attr,
+                            (attr & 3) == 2 ? "bulk" :
+                            (attr & 3) == 3 ? "int" : "ctrl", mps);
+                }
+                off += len;
+            }
+        } else {
+            fprintf(stderr, "[USB-CFG] GET_DESCRIPTOR failed rc=%d\n", crc);
+        }
         return true;
     }
     return false;
@@ -317,9 +352,13 @@ void UsbTransport_PC::submitRead(std::size_t, RecvCallback cb) {
 void UsbTransport_PC::write(const uint8_t *data, std::size_t len) {
     if (!impl_->devh) return;
     int tx = 0;
-    impl_->bulk_transfer(impl_->devh, 0x01,
+    int rc = impl_->bulk_transfer(impl_->devh, 0x01,
                          const_cast<unsigned char *>(data),
                          static_cast<int>(len), &tx, 1000);
+    // Diagnostic: surface write failures (previously silently ignored).
+    if (rc != 0 || tx != static_cast<int>(len))
+        fprintf(stderr, "[USB-WRITE] ep=0x01 len=%zu tx=%d rc=%d\n",
+                len, tx, rc);
 }
 
 void UsbTransport_PC::close() {
