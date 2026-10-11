@@ -68,6 +68,9 @@ public:
     // Pass empty payload for ping-style messages.
     void send(Cmd cmd, const std::vector<uint8_t> &payload = {});
 
+    // Send a pre-built Message (from the static factories).
+    void send(const Message &msg);
+
     // Re-key after Box accepts our key.
     void setKey(const uint8_t key[16], const uint8_t iv[16]) {
         cipher_.init(key, iv);

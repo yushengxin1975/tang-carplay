@@ -3,6 +3,7 @@
 
 #include <cstring>
 #include <ctime>
+#include <string>
 
 namespace carlinkit {
 
@@ -50,15 +51,16 @@ void Connection::sendInit() {
     send(Message::File("/tmp/screen_dpi", 120));
     send(Message::File("/etc/android_work_mode", 1));
     send(Message::Init(1024, 576, 60));
-    send(Message::String(Cmd::JSON_CONTROL,
+    const std::string json =
         "{\"syncTime\":" + std::to_string(syncTime) + ",\"mediaDelay\":300,"
         "\"drivePosition\":" + std::to_string(drivePosition) + ","
         "\"androidAutoSizeW\":" + std::to_string(autoSizeW) + ","
         "\"androidAutoSizeH\":" + std::to_string(autoSizeH) + ","
         "\"HiCarConnectMode\":0,\"GNSSCapability\":7,\"DashboardInfo\":1,"
-        "\"UseBTPhone\":0}"));
-    send(Message::String(Cmd::DAYNIGHT,
-        "{\"DayNightMode\":" + std::to_string(nightMode) + "}"));
+        "\"UseBTPhone\":0}";
+    send(Message::String(Cmd::JSON_CONTROL, json.c_str()));
+    const std::string dayNight = "{\"DayNightMode\":" + std::to_string(nightMode) + "}";
+    send(Message::String(Cmd::DAYNIGHT, dayNight.c_str()));
 
     send(Message::File("/tmp/night_mode", nightMode));
     send(Message::File("/tmp/charge_mode", 0));  // weak charge
@@ -80,19 +82,24 @@ void Connection::stop() {
 }
 
 void Connection::send(Cmd cmd, const std::vector<uint8_t> &payload) {
-    if (!transport_) return;
     Message msg(cmd, /*encrypt=*/cipher_enabled_, static_cast<int32_t>(payload.size()),
                payload.empty() ? nullptr : const_cast<uint8_t *>(payload.data()));
-    if (cipher_enabled_ && !payload.empty()) {
+    send(msg);
+}
+
+void Connection::send(const Message &in) {
+    if (!transport_) return;
+    Message msg = in;
+    if (cipher_enabled_ && msg.encrypted() && msg.payload_size() > 0) {
         // Pad to 16-byte boundary (AES block)
-        std::vector<uint8_t> padded = payload;
+        std::vector<uint8_t> padded(msg.payload(), msg.payload() + msg.payload_size());
         while (padded.size() % 16 != 0) padded.push_back(0);
         std::vector<uint8_t> enc(padded.size());
         char err[128];
         if (!cipher_.encrypt(padded.data(), padded.size(), enc.data(), err)) {
             throw std::runtime_error(std::string("Connection::send encrypt: ") + err);
         }
-        msg = Message(cmd, cipher_enabled_, padded.size(), enc.data());
+        msg = Message(msg.type(), false, static_cast<int32_t>(padded.size()), enc.data());
     }
     auto out = msg.serialize();
     // FastCarPlay sends the 16-byte header and the payload as two separate
