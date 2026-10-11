@@ -420,7 +420,15 @@ void UsbTransport_PC::submitRead(std::size_t, RecvCallback cb) {
                                               &rx, 100);
                 if (rc == 0 && rx > 0) {
                     fprintf(stderr, "[USB-READ] rx=%d\n", rx);
-                    if (impl_->recv) impl_->recv(buf, static_cast<std::size_t>(rx));
+                    if (impl_->recv) {
+                        try {
+                            impl_->recv(buf, static_cast<std::size_t>(rx));
+                        } catch (const std::exception &e) {
+                            fprintf(stderr, "[USB-READ] callback exception: %s\n", e.what());
+                        } catch (...) {
+                            fprintf(stderr, "[USB-READ] callback unknown exception\n");
+                        }
+                    }
                 } else if (rc != 0 && rc != -7 && rc != -8) {
                     fprintf(stderr, "[USB-READ] fatal err rc=%d\n", rc);
                     break;

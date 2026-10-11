@@ -109,13 +109,8 @@ void Connection::send(const Message &in) {
         msg.mark_encrypted();  // magic -> MAGIC_ENC (box reads encrypted frames)
     }
     auto out = msg.serialize();
-    // FastCarPlay sends the 16-byte header and the payload as two separate
-    // bulk transfers; the short header packet terminates the first transfer
-    // so the Box's reader always sees a clean header first.
-    transport_->write(out.data(), sizeof(Header));
-    if (out.size() > sizeof(Header))
-        transport_->write(out.data() + sizeof(Header),
-                          out.size() - sizeof(Header));
+    // Matches Carlinkit's libBoxUSB host_send: send header + payload in one contiguous transfer
+    transport_->write(out.data(), out.size());
 }
 
 void Connection::onRecv(const uint8_t *data, std::size_t len) {
@@ -136,18 +131,22 @@ void Connection::onRecv(const uint8_t *data, std::size_t len) {
         std::fprintf(stderr, "[USB-IN] magic=0x%08X type=%u len=%d\n",
                      h.magic, h.type, h.length);
 
-        Message msg = Message::parse(data + off, frame);
-        if (msg.encrypted()) {
-            if (msg.payload_size() == 0)
-                break;  // malformed encrypted frame; drop rest
-            std::vector<uint8_t> plain(msg.payload_size());
-            char err[128];
-            if (!cipher_.decrypt_cfb(msg.payload(), msg.payload_size(), plain.data(), err))
-                break;
-            msg = Message(msg.type(), false,
-                          static_cast<int32_t>(plain.size()), plain.data());
+        try {
+            Message msg = Message::parse(data + off, frame);
+            if (msg.encrypted()) {
+                if (msg.payload_size() == 0)
+                    break;  // malformed encrypted frame; drop rest
+                std::vector<uint8_t> plain(msg.payload_size());
+                char err[128];
+                if (!cipher_.decrypt_cfb(msg.payload(), msg.payload_size(), plain.data(), err))
+                    break;
+                msg = Message(msg.type(), false,
+                              static_cast<int32_t>(plain.size()), plain.data());
+            }
+            dispatch(msg);
+        } catch (const std::exception &e) {
+            std::fprintf(stderr, "[USB-IN] parse/dispatch error: %s\n", e.what());
         }
-        dispatch(msg);
         off += frame;
     }
 }

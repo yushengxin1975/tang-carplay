@@ -57,18 +57,21 @@ int main(int argc, char **argv) {
     // Unbuffered stdout: when redirected to a file, printf output must
     // land immediately or a killed process loses the whole log.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    // Encrypted mode by default: 2024+ Carlinkit firmware may REQUIRE the
-    // encrypted protocol (FastCarPlay settings.txt warning). --plain forces
-    // the legacy unencrypted handshake.
-    bool encrypted = true;
+    // 2018.06.20 CPC200-CMAP dongle runs unencrypted protocol.
+    // Encrypted protocol is only used on 2024+ firmware (FastCarPlay settings.txt).
+    // Default to plain mode; use --enc to enable CFB128 encryption.
+    bool encrypted = false;
     UsbTransport_PC::ClaimOptions co;
     // On Windows/WinUSB, set_interface_alt_setting(0,0) + clear_halt are
-    // REQUIRED for the box to accept bulk OUT writes (without them every
-    // write times out rc=-7). Enable by default; --no-alt to disable.
+    // configured for the box to accept bulk OUT writes.
     co.alt_setting = true;
     co.clear_halt = true;
     for (int i = 1; i < argc; ++i) {
-        if (!std::strcmp(argv[i], "--plain")) encrypted = false;
+        if (!std::strcmp(argv[i], "--help") || !std::strcmp(argv[i], "-h")) {
+            std::printf("Usage: pc_main.exe [--plain] [--enc] [--no-alt] [--no-set-config] [--reset-reopen]\n");
+            return 0;
+        }
+        else if (!std::strcmp(argv[i], "--plain")) encrypted = false;
         else if (!std::strcmp(argv[i], "--enc")) encrypted = true;
         else if (!std::strcmp(argv[i], "--reset-reopen")) co.reset_reopen = true;
         else if (!std::strcmp(argv[i], "--alt-setting")) co.alt_setting = true;
