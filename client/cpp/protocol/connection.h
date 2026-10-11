@@ -109,6 +109,7 @@ private:
     InboundCallbacks cbs_;
     ConnState state_ = ConnState::INITIALISING;
     mutable Mutex mtx_;
+    std::vector<uint8_t> rx_buf_;
 };
 
 } // namespace carlinkit

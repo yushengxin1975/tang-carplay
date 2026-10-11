@@ -121,40 +121,63 @@ void Connection::send(const Message &in) {
 }
 
 void Connection::onRecv(const uint8_t *data, std::size_t len) {
-    if (!data || len < 16) return;
-    // A single bulk read may contain multiple frames back-to-back.
-    std::size_t off = 0;
-    while (off + sizeof(Header) <= len) {
+    if (!data || len == 0) return;
+
+    // Append newly arrived bytes to stream buffer
+    rx_buf_.insert(rx_buf_.end(), data, data + len);
+
+    while (rx_buf_.size() >= sizeof(Header)) {
+        // Fast-forward to next valid magic if stream gets out of sync
+        uint32_t magic = 0;
+        std::memcpy(&magic, rx_buf_.data(), sizeof(uint32_t));
+        if (magic != MAGIC && magic != MAGIC_ENC) {
+            std::size_t sync_off = 1;
+            while (sync_off + 4 <= rx_buf_.size()) {
+                uint32_t m = 0;
+                std::memcpy(&m, rx_buf_.data() + sync_off, sizeof(uint32_t));
+                if (m == MAGIC || m == MAGIC_ENC) break;
+                sync_off++;
+            }
+            std::fprintf(stderr, "[USB-IN] lost sync, dropped %zu bytes\n", sync_off);
+            rx_buf_.erase(rx_buf_.begin(), rx_buf_.begin() + sync_off);
+            continue;
+        }
+
         Header h;
-        std::memcpy(&h, data + off, sizeof(Header));
-        if (h.magic != MAGIC && h.magic != MAGIC_ENC)
-            break;  // lost sync; drop the rest of this read
-        if (h.length < 0)
+        std::memcpy(&h, rx_buf_.data(), sizeof(Header));
+        if (h.length < 0 || static_cast<uint32_t>(h.length) > MESSAGE_MAX_PAYLOAD) {
+            std::fprintf(stderr, "[USB-IN] invalid length %d, dropping header\n", h.length);
+            rx_buf_.erase(rx_buf_.begin(), rx_buf_.begin() + sizeof(Header));
+            continue;
+        }
+
+        std::size_t total_msg_size = sizeof(Header) + static_cast<std::size_t>(h.length);
+        if (rx_buf_.size() < total_msg_size) {
+            // Incomplete message; wait for remaining bytes in subsequent reads
             break;
-        std::size_t frame = sizeof(Header) + static_cast<std::size_t>(h.length);
-        if (off + frame > len)
-            break;  // incomplete tail; dropped (no cross-read buffering yet)
+        }
 
         std::fprintf(stderr, "[USB-IN] magic=0x%08X type=%u len=%d\n",
                      h.magic, h.type, h.length);
 
         try {
-            Message msg = Message::parse(data + off, frame);
+            Message msg = Message::parse(rx_buf_.data(), total_msg_size);
             if (msg.encrypted()) {
-                if (msg.payload_size() == 0)
-                    break;  // malformed encrypted frame; drop rest
-                std::vector<uint8_t> plain(msg.payload_size());
-                char err[128];
-                if (!cipher_.decrypt_cfb(msg.payload(), msg.payload_size(), plain.data(), err))
-                    break;
-                msg = Message(msg.type(), false,
-                              static_cast<int32_t>(plain.size()), plain.data());
+                if (msg.payload_size() > 0) {
+                    std::vector<uint8_t> plain(msg.payload_size());
+                    char err[128];
+                    if (cipher_.decrypt_cfb(msg.payload(), msg.payload_size(), plain.data(), err)) {
+                        msg = Message(msg.type(), false,
+                                      static_cast<int32_t>(plain.size()), plain.data());
+                    }
+                }
             }
             dispatch(msg);
         } catch (const std::exception &e) {
             std::fprintf(stderr, "[USB-IN] parse/dispatch error: %s\n", e.what());
         }
-        off += frame;
+
+        rx_buf_.erase(rx_buf_.begin(), rx_buf_.begin() + total_msg_size);
     }
 }
 
