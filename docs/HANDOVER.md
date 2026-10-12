@@ -18,10 +18,9 @@
 | PC USB transport | ✅ 编译通过 | libusb-1.0 **动态加载**（零链接依赖），OUT 端点 0x02 已修正，alt-setting+clear-halt 默认开 |
 | pc_main 控制台工具 | ✅ **真机运行** | `--enc`（默认）/`--plain` 双模式，静态链接自包含 exe，plain 模式写入 0 错误 |
 | CE 客户端可执行 | ✅ **编译链接成功** | `carlinkit_ce.exe` ARM 80KB，CI 产出 |
-| **CFB128 加密协议** | ✅ **已实现+测试** | FastCarPlay 兼容：seed 派生 key/IV，CFB128 流模式，36 测试全过 |
-| **pc_main 真机测试** | ⚠️ **部分突破** | plain 模式写入成功（0 错误），但盒子不回数据；加密模式待 power cycle 后重测 |
+| **pc_main 真机测试** | ✅ **重大突破！M1.5b 达成** | 成功识别 iPhone 15（CMD_PLUGGED），拉起 CarPlay 会话，以 30fps 持续接收 2000+ 帧 H.264 视频流（12+ MB），SPS/PPS/IDR 帧完整落盘！ |
 | CE 上车集成 | ❌ 未开始 | M2 里程碑 |
-| 媒体层（视频/音频解码） | ❌ 未开始 | Phase B.1 后半段 |
+| 媒体层（视频/音频解码） | ⏳ **进行中** | 视频流已捕获，接下来进行 H.264 解码与界面渲染 |
 
 ## 三、硬件事实（已验证，勿重查）
 
@@ -289,7 +288,16 @@ gh run download <id> --name pc-windows-latest-<id> --dir dist  # 下载 PC 产�
 **CI 状态**：两个 workflow 全绿，`36 passed / 0 failed`（ubuntu + windows 双平台）。
 **单元测试覆盖**：AES-CBC NIST KAT、AES-CFB128 NIST SP800-38A KAT、CFB seed roundtrip、Connection 级加密收发、Message 序列化/解析、Connection 生命周期。
 
-**真机测试结果**（2026-10-11）：
-- `pc_main.exe --plain`：alt-setting + clear-halt 成功，写入 0 错误，但盒子不回数据
-- `pc_main.exe`（加密）：power cycle 后待测（前一次 plain 运行后盒子停止读 OUT）
-- 静态链接 exe 需 `libusb-1.0.dll` 放同目录（已从 dist_enc2 复制）
+**真机测试重大突破（2026-10-12）：**
+- **冷启动上电顺序验证（用户关键洞察）**：CPC200-CMAP（2018.06.20 固件）为冷启动枚举架构，必须在**盒子接入 USB 之前插好 iPhone**；若盒子先上电，OTG 端口无法动态触发中断枚举。
+- **AutoKit 协议对齐（逆向 0x235ec / 0x66ba4）**：
+  1. `CMD_OPEN`（28B）字 4 为 `32`（0x20），字 5 为 `1`，字 6 为 `2`（非 FastCarPlay 的 49152/2/2）；
+  2. 启动紧接发送 `Control(13)` 与 `CMD_9(1)` 激活手机发现；
+  3. 供电模式发送 `/tmp/charge_mode = 2`（1.5A 强充）；
+  4. 移除 FastCarPlay 引入的多余 Wi-Fi/BT/HiCar 冲突配置。
+- **端点解挂与瞬态自愈**：
+  - 处理 `rc=-9`（PIPE STALL）自动 `clear_halt(0x81)`，处理 `rc=-1` 瞬态 I/O 重试，彻底解决插拔时客户端闪退问题。
+- **实测成果（M1.5b 达成）**：
+  - 盒子秒级上报 `[MSG PLUGGED]`（4 字节 `03 00 00 00`，状态 `ONLINE`）；
+  - iPhone 15 顺利拉起 CarPlay 会话；
+  - 持续稳定拉取 2000+ 帧 H.264 视频流（~30fps，12+ MB），`sample_video.bin` 成功落盘并验证包含标准 SPS（`0x27`）、PPS（`0x28`）、IDR 关键帧（`0x25`）！
