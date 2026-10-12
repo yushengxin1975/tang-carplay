@@ -42,6 +42,58 @@ struct UsbTransport_CE::Impl {
 UsbTransport_CE::UsbTransport_CE() : impl_(new Impl) {}
 UsbTransport_CE::~UsbTransport_CE() { close(); delete impl_; }
 
+static bool EnsureDriverInstalled(const WCHAR *appDir) {
+    WCHAR src[MAX_PATH];
+    _snwprintf(src, MAX_PATH - 1, L"%s\\USBKIT.DLL", appDir);
+    if (GetFileAttributesW(src) == 0xFFFFFFFF) {
+        _snwprintf(src, MAX_PATH - 1, L"%s\\CEUSBBOX.DLL", appDir);
+    }
+    if (GetFileAttributesW(src) == 0xFFFFFFFF) {
+        _snwprintf(src, MAX_PATH - 1, L"%s\\ceusbbox.dll", appDir);
+    }
+    if (GetFileAttributesW(src) == 0xFFFFFFFF) return false;
+
+    BOOL winOk = CopyFileW(src, L"\\Windows\\USBKIT.DLL", FALSE);
+    const WCHAR *drvPath = winOk ? L"USBKIT.DLL" : src;
+
+    auto regStr = [](HKEY root, const WCHAR *sub, const WCHAR *val, const WCHAR *data) {
+        HKEY hk; DWORD disp;
+        if (RegCreateKeyExW(root, sub, 0, NULL, REG_OPTION_NON_VOLATILE, 0, NULL, &hk, &disp) == ERROR_SUCCESS) {
+            RegSetValueExW(hk, val, 0, REG_SZ, (const BYTE*)data, (DWORD)(wcslen(data) + 1) * sizeof(WCHAR));
+            RegCloseKey(hk);
+        }
+    };
+    auto regDw = [](HKEY root, const WCHAR *sub, const WCHAR *val, DWORD data) {
+        HKEY hk; DWORD disp;
+        if (RegCreateKeyExW(root, sub, 0, NULL, REG_OPTION_NON_VOLATILE, 0, NULL, &hk, &disp) == ERROR_SUCCESS) {
+            RegSetValueExW(hk, val, 0, REG_DWORD, (const BYTE*)&data, sizeof(data));
+            RegCloseKey(hk);
+        }
+    };
+
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", L"Prefix", L"UKW");
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", L"Dll", drvPath);
+    regDw(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", L"Flags", 8);
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", L"InterfaceFilter_MASS_STORAGE", L"8:*:*");
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", L"InterfaceFilter_RNDIS_STANDARD", L"2:2:255:!1057");
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", L"InterfaceFilter_CDC_NCM", L"2:13:*");
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\LoadClients\\4884\\Default\\Default\\Usb_Kernel_Wrapper", L"Dll", drvPath);
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\LoadClients\\4884_5408\\Default\\Default\\Usb_Kernel_Wrapper", L"Dll", drvPath);
+
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", L"Dll", drvPath);
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", L"Prefix", L"UKW");
+    regDw(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", L"Flags", 16);
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", L"Index", L"1");
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", L"Order", L"0");
+
+    HANDLE h1 = ActivateDeviceEx(L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", NULL, 0, 0);
+    if (h1 && h1 != INVALID_HANDLE_VALUE) CloseHandle(h1);
+    HANDLE h2 = ActivateDeviceEx(L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", NULL, 0, 0);
+    if (h2 && h2 != INVALID_HANDLE_VALUE) CloseHandle(h2);
+
+    return true;
+}
+
 void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
     // Idempotent: caller may open() again via Connection::start().
     if (impl_->dev) return;
@@ -78,6 +130,11 @@ void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
 #undef RESOLVE
 
     impl_->drv = impl_->Open();
+    if (!impl_->drv || impl_->drv == INVALID_HANDLE_VALUE) {
+        EnsureDriverInstalled(dir);
+        Sleep(500);
+        impl_->drv = impl_->Open();
+    }
     if (!impl_->drv || impl_->drv == INVALID_HANDLE_VALUE)
         throw std::runtime_error("CE: UkwOpenDriver failed (USBKIT.DLL registered?)");
 
