@@ -33,6 +33,11 @@ jobs:
           echo "Using compiler: $CXX"
           mkdir -p build
 
+          EXTRA_LIBS=""
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            EXTRA_LIBS="-lws2_32"
+          fi
+
           # Unit tests
           "$CXX" -std=c++17 -O2 -g -Wall \
             -Iclient/include -Iclient/cpp \
@@ -40,6 +45,7 @@ jobs:
             client/cpp/protocol/connection.cpp \
             client/cpp/protocol/usb_transport.cpp \
             client/test/test_protocol.cpp \
+            $EXTRA_LIBS \
             -o build/test.exe
           ./build/test.exe | tee test.log
 
@@ -50,6 +56,7 @@ jobs:
             client/cpp/protocol/connection.cpp \
             client/cpp/protocol/usb_transport.cpp \
             client/cpp/pc_main.cpp \
+            $EXTRA_LIBS \
             -o build/pc_main
           ls -la build/
       - name: Upload artifacts

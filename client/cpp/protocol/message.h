@@ -133,6 +133,18 @@ public:
         return Message(Cmd::ENCRYPTION, seed, /*encrypt=*/false);
     }
 
+    // CMD_TOUCH: 16-byte payload (action, x, y, 0), sent unencrypted
+    // action: 14 = DOWN, 15 = MOVE, 16 = UP
+    // x, y: 0..10000 (normalized * 10000)
+    static Message Touch(uint32_t action, uint32_t x, uint32_t y) {
+        Message m(Cmd::TOUCH, /*encrypt=*/false, 16);
+        write_u32_le(m.mutable_payload(), action);
+        write_u32_le(m.mutable_payload() + 4, x);
+        write_u32_le(m.mutable_payload() + 8, y);
+        write_u32_le(m.mutable_payload() + 12, 0);
+        return m;
+    }
+
     // Accessors
     Cmd type() const { return static_cast<Cmd>(hdr_.type); }
     bool encrypted() const { return encrypted_; }

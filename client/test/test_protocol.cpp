@@ -76,6 +76,25 @@ static void test_message_roundtrip() {
     EXPECT(!m2.encrypted(), "roundtrip not encrypted");
 }
 
+// --- 2b. Message::Touch factory and serialization ---
+static void test_message_touch() {
+    std::printf("[test_message_touch]\n");
+    Message m = Message::Touch(14, 5120, 3000);
+    EXPECT(m.type() == Cmd::TOUCH, "touch cmd == Cmd::TOUCH");
+    EXPECT(m.length() == 16, "touch length == 16");
+    EXPECT(!m.encrypted(), "touch is plain");
+    EXPECT(m.read_u32(0) == 14, "touch action == 14 (DOWN)");
+    EXPECT(m.read_u32(4) == 5120, "touch x == 5120");
+    EXPECT(m.read_u32(8) == 3000, "touch y == 3000");
+    EXPECT(m.read_u32(12) == 0, "touch reserved == 0");
+    auto bytes = m.serialize();
+    EXPECT(bytes.size() == 32, "touch serialized size == 32 (16 header + 16 payload)");
+    Message m2 = Message::parse(bytes.data(), bytes.size());
+    EXPECT(m2.type() == Cmd::TOUCH, "parse touch type");
+    EXPECT(m2.read_u32(0) == 14 && m2.read_u32(4) == 5120 && m2.read_u32(8) == 3000,
+           "parse touch payload fields match");
+}
+
 // --- 3. Message encrypted path (manual CBC + mark_encrypted) ---
 static void test_message_encrypted() {
     std::printf("[test_message_encrypted]\n");
@@ -261,6 +280,7 @@ int main() {
     test_aes_roundtrip();
     test_aes_nist_kat();
     test_message_roundtrip();
+    test_message_touch();
     test_message_encrypted();
     test_aes_cfb_nist_kat();
     test_aes_cfb_roundtrip();
