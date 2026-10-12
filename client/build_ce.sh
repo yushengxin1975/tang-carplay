@@ -5,8 +5,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-CC="${CCGCC_BIN:-/opt/cegcc-arm/bin}/arm-mingw32ce-g++"
-STRIP="${CCGCC_BIN:-/opt/cegcc-arm/bin}/arm-mingw32ce-strip"
+CC="${CEGCC_BIN:-${CCGCC_BIN:-/opt/cegcc-arm/bin}}/arm-mingw32ce-g++"
+STRIP="${CEGCC_BIN:-${CCGCC_BIN:-/opt/cegcc-arm/bin}}/arm-mingw32ce-strip"
 
 if [ ! -x "$CC" ]; then
   echo "FATAL: CeGCC compiler not found at $CC" >&2

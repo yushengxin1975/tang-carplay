@@ -211,4 +211,9 @@ private:
     std::vector<uint8_t> payload_;
 };
 
+namespace carlinkit {
+using ::Message;
+using ::Header;
+}
+
 #endif // CARLINKIT_MESSAGE_H

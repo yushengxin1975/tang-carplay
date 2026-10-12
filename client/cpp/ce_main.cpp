@@ -95,7 +95,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 
         InterlockedIncrement(reinterpret_cast<volatile LONG *>(&g_touch_count));
         if (g_conn) {
-            try { g_conn->send(carlinkit::Message::Touch(14, nx, ny)); } catch (...) {}
+            try { g_conn->send(Message::Touch(14, nx, ny)); } catch (...) {}
         }
         return 0;
     }
@@ -108,7 +108,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (ny > 10000) ny = 10000;
 
             if (g_conn) {
-                try { g_conn->send(carlinkit::Message::Touch(15, nx, ny)); } catch (...) {}
+                try { g_conn->send(Message::Touch(15, nx, ny)); } catch (...) {}
             }
         }
         return 0;
@@ -121,7 +121,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (ny > 10000) ny = 10000;
 
         if (g_conn) {
-            try { g_conn->send(carlinkit::Message::Touch(16, nx, ny)); } catch (...) {}
+            try { g_conn->send(Message::Touch(16, nx, ny)); } catch (...) {}
         }
         return 0;
     }
