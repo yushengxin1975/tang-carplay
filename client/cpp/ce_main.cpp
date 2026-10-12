@@ -58,7 +58,7 @@ static carlinkit::H264Decoder_CE g_decoder;
 
 // Video frame rendering surface (1024x600 16bpp RGB565)
 // Static 8-byte aligned BSS buffer — zero allocation failure risk, never NULL
-static alignas(8) uint16_t g_carplay_pixels[1024 * 600];
+static uint16_t g_carplay_pixels[1024 * 600] __attribute__((aligned(8)));
 static volatile BOOL g_has_carplay_frame = FALSE;
 
 struct CarplayBmi {
@@ -76,8 +76,8 @@ static HANDLE g_hVidEvent = nullptr;
 static std::vector<uint8_t> g_pending_video;
 static volatile BOOL g_has_pending_video = FALSE;
 
-// Persistent diagnostic file logging
-static FILE *g_logFile = nullptr;
+// Persistent diagnostic file logging via WinCE native CreateFileW
+static HANDLE g_hLogFile = INVALID_HANDLE_VALUE;
 
 static void InitLogging() {
     WCHAR exePath[MAX_PATH];
@@ -86,28 +86,40 @@ static void InitLogging() {
         if (pSlash) {
             *(pSlash + 1) = L'\0';
             wcscat(exePath, L"carplay.log");
-            g_logFile = _wfopen(exePath, L"a+");
-            if (g_logFile) {
-                fwprintf(g_logFile, L"\n=== CarPlay Startup (Tick=%u) ===\n", GetTickCount());
-                fflush(g_logFile);
+            g_hLogFile = CreateFileW(exePath, GENERIC_WRITE, FILE_SHARE_READ,
+                                     nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (g_hLogFile != INVALID_HANDLE_VALUE) {
+                SetFilePointer(g_hLogFile, 0, nullptr, FILE_END);
+                char hdr[128];
+                _snprintf(hdr, sizeof(hdr), "\r\n=== CarPlay Startup (Tick=%u) ===\r\n", GetTickCount());
+                DWORD written = 0;
+                WriteFile(g_hLogFile, hdr, strlen(hdr), &written, nullptr);
+                FlushFileBuffers(g_hLogFile);
             }
         }
     }
 }
 
 static void LogDebugW(const WCHAR *fmt, ...) {
-    WCHAR buf[512];
+    WCHAR wbuf[512];
     va_list ap;
     va_start(ap, fmt);
-    _vsnwprintf(buf, 511, fmt, ap);
+    _vsnwprintf(wbuf, 511, fmt, ap);
     va_end(ap);
-    buf[511] = L'\0';
+    wbuf[511] = L'\0';
 
-    if (g_logFile) {
-        fwprintf(g_logFile, L"[%u] %s\n", GetTickCount(), buf);
-        fflush(g_logFile);
+    if (g_hLogFile != INVALID_HANDLE_VALUE) {
+        char abuf[512];
+        int alen = WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, abuf, sizeof(abuf) - 3, nullptr, nullptr);
+        if (alen > 0) {
+            abuf[alen - 1] = '\r';
+            abuf[alen] = '\n';
+            DWORD written = 0;
+            WriteFile(g_hLogFile, abuf, alen + 1, &written, nullptr);
+            FlushFileBuffers(g_hLogFile);
+        }
     }
-    OutputDebugStringW(buf);
+    OutputDebugStringW(wbuf);
 }
 
 void SetLineW(int i, const WCHAR *fmt, ...) {
@@ -819,9 +831,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
     DeleteCriticalSection(&g_cs);
 
     LogDebugW(L"[MAIN] Application exited cleanly");
-    if (g_logFile) {
-        fclose(g_logFile);
-        g_logFile = nullptr;
+    if (g_hLogFile != INVALID_HANDLE_VALUE) {
+        CloseHandle(g_hLogFile);
+        g_hLogFile = INVALID_HANDLE_VALUE;
     }
     return 0;
 }
