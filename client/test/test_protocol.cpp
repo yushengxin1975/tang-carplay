@@ -285,6 +285,15 @@ static void test_wave_player() {
     EXPECT(player.channels() == 2, "channels recorded");
     EXPECT(player.is_open(), "is_open after open");
 
+    EXPECT(player.get_volume() == 100, "default volume 100%");
+    player.set_volume(75);
+    EXPECT(player.get_volume() == 75, "volume changed to 75%");
+    player.set_volume(160);
+    EXPECT(player.get_volume() == 150, "volume clamped to 150%");
+    player.set_volume(-10);
+    EXPECT(player.get_volume() == 0, "volume clamped to 0%");
+    player.set_volume(100);
+
     std::vector<uint8_t> pcm(11520, 0);
     player.write(pcm.data(), pcm.size());
     EXPECT(true, "write buffer ok");

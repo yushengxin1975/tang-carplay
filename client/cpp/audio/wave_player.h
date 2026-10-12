@@ -46,6 +46,7 @@ typedef UINT (WINAPI *PFN_waveOutUnprepareHeader)(HANDLE, CE_WAVEHDR*, UINT);
 typedef UINT (WINAPI *PFN_waveOutReset)(HANDLE);
 typedef UINT (WINAPI *PFN_waveOutClose)(HANDLE);
 typedef UINT (WINAPI *PFN_waveOutGetNumDevs)(void);
+typedef UINT (WINAPI *PFN_waveOutSetVolume)(HANDLE, DWORD);
 
 #define CE_WAVE_FORMAT_PCM 1
 #define CE_WAVE_MAPPER ((UINT)-1)
@@ -61,6 +62,7 @@ struct CeWaveApi {
     PFN_waveOutReset pReset = nullptr;
     PFN_waveOutClose pClose = nullptr;
     PFN_waveOutGetNumDevs pGetNumDevs = nullptr;
+    PFN_waveOutSetVolume pSetVolume = nullptr;
 
     bool init() {
         if (pOpen && pWrite) return true;
@@ -76,6 +78,7 @@ struct CeWaveApi {
         pReset = (PFN_waveOutReset)GetProcAddressW(hMod, L"waveOutReset");
         pClose = (PFN_waveOutClose)GetProcAddressW(hMod, L"waveOutClose");
         pGetNumDevs = (PFN_waveOutGetNumDevs)GetProcAddressW(hMod, L"waveOutGetNumDevs");
+        pSetVolume = (PFN_waveOutSetVolume)GetProcAddressW(hMod, L"waveOutSetVolume");
         return (pOpen && pPrep && pWrite && pUnprep && pReset && pClose);
     }
 };
@@ -97,6 +100,29 @@ public:
 
     WavePlayer(const WavePlayer &) = delete;
     WavePlayer &operator=(const WavePlayer &) = delete;
+
+    void set_volume(int percent) {
+        if (percent < 0) percent = 0;
+        if (percent > 150) percent = 150;
+        volume_percent_ = percent;
+#if defined(__MINGW32CE__) || defined(_WIN32_WCE)
+        if (hWave_ && ce_api_.pSetVolume) {
+            DWORD dwVol = static_cast<DWORD>((percent * 0xFFFF) / 100);
+            if (dwVol > 0xFFFF) dwVol = 0xFFFF;
+            DWORD dwStereo = dwVol | (dwVol << 16);
+            ce_api_.pSetVolume(hWave_, dwStereo);
+        }
+#elif defined(_WIN32)
+        if (hWave_) {
+            DWORD dwVol = static_cast<DWORD>((percent * 0xFFFF) / 100);
+            if (dwVol > 0xFFFF) dwVol = 0xFFFF;
+            DWORD dwStereo = dwVol | (dwVol << 16);
+            waveOutSetVolume(hWave_, dwStereo);
+        }
+#endif
+    }
+
+    int get_volume() const { return volume_percent_; }
 
     bool open(uint32_t sample_rate, uint16_t channels, uint16_t bits_per_sample = 16) {
 #if defined(__MINGW32CE__) || defined(_WIN32_WCE)
@@ -212,6 +238,7 @@ public:
         if (!slot) return;
 
         slot->data.assign(pcm, pcm + len);
+        apply_volume(slot->data);
         std::memset(&slot->ce_hdr, 0, sizeof(detail::CE_WAVEHDR));
         slot->ce_hdr.lpData = reinterpret_cast<LPSTR>(slot->data.data());
         slot->ce_hdr.dwBufferLength = static_cast<DWORD>(slot->data.size());
@@ -240,6 +267,7 @@ public:
         if (!slot) return;
 
         slot->data.assign(pcm, pcm + len);
+        apply_volume(slot->data);
         std::memset(&slot->hdr, 0, sizeof(WAVEHDR));
         slot->hdr.lpData = reinterpret_cast<LPSTR>(slot->data.data());
         slot->hdr.dwBufferLength = static_cast<DWORD>(slot->data.size());
@@ -344,11 +372,27 @@ private:
             }
         }
 #endif
+    void apply_volume(std::vector<uint8_t> &buf) {
+        if (volume_percent_ != 100 && bits_per_sample_ == 16) {
+            int16_t *samples = reinterpret_cast<int16_t*>(buf.data());
+            std::size_t n_samples = buf.size() / sizeof(int16_t);
+            if (volume_percent_ == 0) {
+                std::memset(samples, 0, buf.size());
+            } else {
+                for (std::size_t i = 0; i < n_samples; ++i) {
+                    int32_t val = (static_cast<int32_t>(samples[i]) * volume_percent_) / 100;
+                    if (val > 32767) val = 32767;
+                    else if (val < -32768) val = -32768;
+                    samples[i] = static_cast<int16_t>(val);
+                }
+            }
+        }
     }
 
     uint32_t sample_rate_ = 0;
     uint16_t channels_ = 0;
     uint16_t bits_per_sample_ = 16;
+    int volume_percent_ = 100;
     bool is_dummy_ = false;
 
 #if defined(__MINGW32CE__) || defined(_WIN32_WCE)
