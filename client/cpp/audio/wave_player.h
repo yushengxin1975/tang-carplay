@@ -372,6 +372,8 @@ private:
             }
         }
 #endif
+    }
+
     void apply_volume(std::vector<uint8_t> &buf) {
         if (volume_percent_ != 100 && bits_per_sample_ == 16) {
             int16_t *samples = reinterpret_cast<int16_t*>(buf.data());
