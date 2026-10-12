@@ -361,6 +361,9 @@ static DWORD WINAPI ClientThread(LPVOID) {
         PushEventW(L"OK: CMD_PLUGGED 收到 -> 会话拉起");
         SetLineW(1, L"[在线] iPhone 已连接！CarPlay 运行中");
         SetLineW(2, L"双向触控与音频流已激活");
+        if (g_conn) {
+            try { g_conn->send(carlinkit::Message::Control(12)); } catch (...) {}
+        }
     };
 
     cb.on_unplugged = []() {
@@ -374,7 +377,7 @@ static DWORD WINAPI ClientThread(LPVOID) {
     cb.on_any = [](Cmd c, const uint8_t *p, std::size_t n) {
         if (c == Cmd::VIDEO_DATA) {
             InterlockedIncrement(reinterpret_cast<volatile LONG *>(&g_video_frames));
-            if ((g_video_frames % 60) == 1) {
+            if ((g_video_frames % 30) == 1) {
                 SetLineW(3, L"视频: %u 帧 | 音频: %u 帧 | 触控: %u 次",
                          g_video_frames, g_audio_frames, g_touch_count);
             }

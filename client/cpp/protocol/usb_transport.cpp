@@ -21,6 +21,15 @@ extern void PushEventW(const WCHAR *fmt, ...);
 namespace carlinkit {
 
 struct UsbTransport_CE::Impl {
+    // 1. 官方 libBoxUSB 驱动后端（生产环境首选）
+    HMODULE box_lib = nullptr;
+    int  (*host_init)(void) = nullptr;
+    int  (*host_send)(void *, int, int) = nullptr;
+    int  (*host_recv)(void *, int, int) = nullptr;
+    void (*host_close)(void) = nullptr;
+    bool use_box_lib = false;
+
+    // 2. 原生 ceusbkwrapper 驱动后端（备用）
     HMODULE lib = nullptr;
     HANDLE drv = INVALID_HANDLE_VALUE;
     HANDLE reader_thread = nullptr;
@@ -35,6 +44,8 @@ struct UsbTransport_CE::Impl {
     BOOL  (*Claim)(void *, DWORD) = nullptr;
     BOOL  (*Release)(void *, DWORD) = nullptr;
     BOOL  (*BulkXfer)(void *, DWORD, UCHAR, void *, DWORD, LPDWORD, void *) = nullptr;
+    BOOL  (*ClearHaltHost)(void *, UCHAR) = nullptr;
+    BOOL  (*ClearHaltDev)(void *, UCHAR) = nullptr;
     void  (*Close)(HANDLE) = nullptr;
 
     void *dev = nullptr;
@@ -110,7 +121,7 @@ static bool EnsureDriverInstalled(const WCHAR *appDir) {
 }
 
 void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
-    if (impl_->dev) return;
+    if (impl_->use_box_lib || impl_->dev) return;
     WCHAR dir[MAX_PATH] = {0}, path[MAX_PATH] = {0};
     if (GetModuleFileNameW(NULL, dir, MAX_PATH)) {
         WCHAR *slash = wcsrchr(dir, L'\\');
@@ -124,7 +135,34 @@ void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
     EnsureDriverInstalled(dir);
     Sleep(200);
 
-    // Step 2: Load ceusbkwrapper.dll
+    // Step 2: 优先尝试官方 libBoxUSB.dll 驱动
+    WCHAR boxLibPath[MAX_PATH] = {0};
+    _snwprintf(boxLibPath, MAX_PATH - 1, L"%s\\libBoxUSB.dll", dir);
+    HMODULE bMod = LoadLibraryW(boxLibPath);
+    if (!bMod) bMod = LoadLibraryW(L"libBoxUSB.dll");
+    if (bMod) {
+        impl_->host_init  = reinterpret_cast<decltype(impl_->host_init)>(GetProcAddressW(bMod, L"host_init"));
+        impl_->host_send  = reinterpret_cast<decltype(impl_->host_send)>(GetProcAddressW(bMod, L"host_send"));
+        impl_->host_recv  = reinterpret_cast<decltype(impl_->host_recv)>(GetProcAddressW(bMod, L"host_recv"));
+        impl_->host_close = reinterpret_cast<decltype(impl_->host_close)>(GetProcAddressW(bMod, L"host_close"));
+        if (impl_->host_init && impl_->host_send && impl_->host_recv && impl_->host_close) {
+            PushEventW(L"加载官方 libBoxUSB.dll 驱动...");
+            int hrc = impl_->host_init();
+            if (hrc == 0) {
+                impl_->box_lib = bMod;
+                impl_->use_box_lib = true;
+                impl_->claimed = true;
+                PushEventW(L"OK: libBoxUSB 握手成功 (0x1314:0x1520)");
+                return;
+            } else {
+                PushEventW(L"libBoxUSB init 返回 %d，启用原生驱动", hrc);
+                FreeLibrary(bMod);
+                bMod = nullptr;
+            }
+        }
+    }
+
+    // Step 3: 原生 ceusbkwrapper.dll 备用驱动链
     impl_->lib = LoadLibraryW(path);
     if (!impl_->lib) impl_->lib = LoadLibraryW(L"ceusbkwrapper.dll");
     if (!impl_->lib) {
@@ -153,7 +191,12 @@ void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
     RESOLVE(Close,      "UkwCloseDriver")
 #undef RESOLVE
 
-    // Step 3: Open the driver (Try CBX0: directly first, then UkwOpenDriver)
+    impl_->ClearHaltHost = reinterpret_cast<decltype(impl_->ClearHaltHost)>(
+        GetProcAddressW(impl_->lib, L"UkwClearHaltHost"));
+    impl_->ClearHaltDev  = reinterpret_cast<decltype(impl_->ClearHaltDev)>(
+        GetProcAddressW(impl_->lib, L"UkwClearHaltDevice"));
+
+    // Step 4: 打开驱动 (Try CBX0: directly first, then UkwOpenDriver)
     HANDLE hDriver = CreateFileW(L"CBX0:", GENERIC_READ | GENERIC_WRITE,
                                  FILE_SHARE_READ | FILE_SHARE_WRITE,
                                  NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
@@ -205,6 +248,7 @@ void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
 }
 
 bool UsbTransport_CE::claim() {
+    if (impl_->use_box_lib) return true;
     if (!impl_->dev) {
         PushEventW(L"ERR: claim失败 (设备句柄为空)");
         return false;
@@ -213,6 +257,14 @@ bool UsbTransport_CE::claim() {
     if (impl_->Claim(impl_->dev, 0)) {
         impl_->claimed = true;
         PushEventW(L"OK: UkwClaimInterface 接口0 认领成功");
+        if (impl_->ClearHaltHost) {
+            impl_->ClearHaltHost(impl_->dev, 0x02);
+            impl_->ClearHaltHost(impl_->dev, 0x81);
+        }
+        if (impl_->ClearHaltDev) {
+            impl_->ClearHaltDev(impl_->dev, 0x02);
+            impl_->ClearHaltDev(impl_->dev, 0x81);
+        }
         return true;
     }
     DWORD err = GetLastError();
@@ -222,36 +274,59 @@ bool UsbTransport_CE::claim() {
 
 void UsbTransport_CE::submitRead(std::size_t, RecvCallback cb) {
     if (impl_->reader_thread) return;
-    if (!impl_->BulkXfer || !impl_->dev) return;
     impl_->recv = std::move(cb);
     InterlockedExchange(&impl_->reader_running, 1);
     impl_->reader_thread = CreateThread(nullptr, 256 * 1024,
         [](LPVOID arg) -> DWORD {
             Impl *im = static_cast<Impl *>(arg);
-            std::vector<uint8_t> buf(64 * 1024);
+            std::vector<uint8_t> buf(16 * 1024);
             // UKW_TF_IN_TRANSFER (0x01) | UKW_TF_SHORT_TRANSFER_OK (0x200)
             const DWORD in_flags = 0x00000001 | 0x00000200;
             while (InterlockedCompareExchange(&im->reader_running, 1, 1) == 1) {
-                DWORD rx = 0;
-                BOOL ok = im->BulkXfer(im->dev, in_flags, 0x81,
-                                       buf.data(),
-                                       static_cast<DWORD>(buf.size()),
-                                       &rx, nullptr);
-                if (ok && rx > 0 && im->recv) im->recv(buf.data(), rx);
-                else if (!ok) Sleep(50);
+                if (im->use_box_lib && im->host_recv) {
+                    int rx = im->host_recv(buf.data(), static_cast<int>(buf.size()), 100);
+                    if (rx > 0 && im->recv) {
+                        im->recv(buf.data(), static_cast<std::size_t>(rx));
+                    } else {
+                        Sleep(10);
+                    }
+                } else if (im->dev && im->BulkXfer) {
+                    DWORD rx = 0;
+                    BOOL ok = im->BulkXfer(im->dev, in_flags, 0x81,
+                                           buf.data(),
+                                           static_cast<DWORD>(buf.size()),
+                                           &rx, nullptr);
+                    if (ok && rx > 0 && im->recv) {
+                        im->recv(buf.data(), rx);
+                    } else {
+                        Sleep(20);
+                    }
+                } else {
+                    Sleep(50);
+                }
             }
             return 0;
         }, impl_, STACK_SIZE_PARAM_IS_A_RESERVATION, 0);
 }
 
 void UsbTransport_CE::write(const uint8_t *data, std::size_t len) {
+    if (impl_->use_box_lib && impl_->host_send) {
+        int tx = impl_->host_send(const_cast<uint8_t *>(data), static_cast<int>(len), 1000);
+        if (tx <= 0) {
+            PushEventW(L"写[libBoxUSB]失败: len=%u tx=%d", (unsigned)len, tx);
+        }
+        return;
+    }
     if (!impl_->dev || !impl_->BulkXfer) return;
     DWORD tx = 0;
     // UKW_TF_OUT_TRANSFER (0x00)
     const DWORD out_flags = 0x00000000;
-    impl_->BulkXfer(impl_->dev, out_flags, 0x02,
-                    const_cast<uint8_t *>(data), static_cast<DWORD>(len),
-                    &tx, nullptr);
+    BOOL ok = impl_->BulkXfer(impl_->dev, out_flags, 0x02,
+                              const_cast<uint8_t *>(data), static_cast<DWORD>(len),
+                              &tx, nullptr);
+    if (!ok) {
+        PushEventW(L"写[UKW]失败: len=%u e=%u", (unsigned)len, GetLastError());
+    }
 }
 
 void UsbTransport_CE::close() {
@@ -260,6 +335,16 @@ void UsbTransport_CE::close() {
         WaitForSingleObject(impl_->reader_thread, 3000);
         CloseHandle(impl_->reader_thread);
         impl_->reader_thread = nullptr;
+    }
+    if (impl_->use_box_lib) {
+        if (impl_->host_close) impl_->host_close();
+        if (impl_->box_lib) {
+            FreeLibrary(impl_->box_lib);
+            impl_->box_lib = nullptr;
+        }
+        impl_->use_box_lib = false;
+        impl_->claimed = false;
+        return;
     }
     if (impl_->dev && impl_->Release && impl_->claimed) {
         impl_->Release(impl_->dev, 0);
