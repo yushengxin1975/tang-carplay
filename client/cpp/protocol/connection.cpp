@@ -56,31 +56,23 @@ void Connection::sendInit(bool encrypted, int work_mode) {
     // scale = min(800/1024, 480/576) = 0.78125 -> 800x450
     const int autoSizeW = 800, autoSizeH = 450;
 
-    send(Message::File("/tmp/screen_dpi", 120));
-    // AutoKit reverse-engineered: 2 = WORK_MODE_IPHONE_CARPLAY, 1 = WORK_MODE_ANDROID_AUTO
-    send(Message::File("/etc/android_work_mode", work_mode));
-    send(Message::Init(1024, 576, 60));
-    const std::string json =
-        "{\"syncTime\":" + std::to_string(syncTime) + ",\"mediaDelay\":300,"
-        "\"drivePosition\":" + std::to_string(drivePosition) + ","
-        "\"androidAutoSizeW\":" + std::to_string(autoSizeW) + ","
-        "\"androidAutoSizeH\":" + std::to_string(autoSizeH) + ","
-        "\"HiCarConnectMode\":0,\"GNSSCapability\":7,\"DashboardInfo\":1,"
-        "\"UseBTPhone\":0}";
-    send(Message::String(Cmd::JSON_CONTROL, json.c_str()));
-    const std::string dayNight = "{\"DayNightMode\":" + std::to_string(nightMode) + "}";
-    send(Message::String(Cmd::DAYNIGHT, dayNight.c_str()));
+    const int width = 1024;
+    const int height = 600;
+    const int fps = 30;
 
-    send(Message::File("/tmp/night_mode", nightMode));
-    send(Message::File("/tmp/charge_mode", 2));  // normal/strong charge (FastCarPlay/AutoKit default)
-    send(Message::File("/etc/box_name", "CarPlay"));
-    send(Message::File("/tmp/hand_drive_mode", drivePosition));
-
-    send(Message::Control(7));    // microphone
+    // 1. Core AutoKit 0x235ec sequence:
+    send(Message::Init(width, height, fps));
     send(Message::Control(13));   // AutoKit standard session control 13
     send(Message(Cmd::CMD_9, 1, /*encrypt=*/false)); // AutoKit phone discovery command (Cmd 9, val 1)
-    send(Message::Control(25));   // wifi 5GHz
-    send(Message::Control(23));   // bluetooth audio off
+    send(Message::File("/tmp/charge_mode", 2));  // normal/strong charge (FastCarPlay/AutoKit default)
+    send(Message::File("/etc/android_work_mode", work_mode));
+
+    // 2. Additional config:
+    send(Message::File("/tmp/screen_dpi", 120));
+    send(Message::File("/tmp/night_mode", nightMode));
+    send(Message::File("/etc/box_name", "CarPlay"));
+    send(Message::File("/tmp/hand_drive_mode", drivePosition));
+    send(Message::Control(7));    // microphone
     send(Message::Control(1002)); // autoconnect
 }
 

@@ -76,8 +76,8 @@ public:
         m.write_u32(4, static_cast<uint32_t>(height));
         m.write_u32(8, static_cast<uint32_t>(fps));
         m.write_u32(12, 5);
-        m.write_u32(16, 49152);
-        m.write_u32(20, 2);
+        m.write_u32(16, 32);  // 0x20 matching AutoKit.exe 0x66ba4
+        m.write_u32(20, 1);   // 1 matching AutoKit.exe 0x66ba4
         m.write_u32(24, 2);
         return m;
     }
