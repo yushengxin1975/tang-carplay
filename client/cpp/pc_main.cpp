@@ -361,6 +361,5 @@ int main(int argc, char **argv) {
     WSACleanup();
 #endif
 
-    conn->stop();
     return 0;
 }

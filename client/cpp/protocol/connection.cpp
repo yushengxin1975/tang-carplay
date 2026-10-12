@@ -47,14 +47,8 @@ void Connection::sendInit(bool encrypted, int work_mode) {
         const uint32_t seed = static_cast<uint32_t>(std::rand());
         cipher_.init_seed(seed);
         send(Message::Encryption(seed));
-    }
-    const int32_t syncTime = static_cast<int32_t>(std::time(nullptr));
     const int drivePosition = 0;  // left-hand drive
     const int nightMode = 2;      // auto
-
-    // androidMode 1 -> 800x480 base, scaled to Settings 1024x576 window:
-    // scale = min(800/1024, 480/576) = 0.78125 -> 800x450
-    const int autoSizeW = 800, autoSizeH = 450;
 
     const int width = 1024;
     const int height = 600;
