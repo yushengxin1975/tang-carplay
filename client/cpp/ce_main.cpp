@@ -412,14 +412,11 @@ static DWORD WINAPI ClientThread(LPVOID) {
             g_conn_state = 0;
             auto t = std::make_unique<UsbTransport_CE>();
             SetLineW(1, L"[1/3] 正在检测 USB 盒子 (0x1314:0x1520)...");
-            t->open();
-            SetLineW(1, L"[2/3] USB 盒子已认领！正在初始化协议...");
-            PushEventW(L"OK: USBTransport claimed (0x1314:0x1520)");
 
             g_conn = new Connection(std::move(t), cb);
             g_conn->start();
 
-            // Send initialization burst (1024x600@30, charge_mode=2, CMD_9 discovery)
+            SetLineW(1, L"[2/3] USB 盒子已认领！正在初始化协议...");
             PushEventW(L"发送 sendInit 配置脉冲...");
             g_conn->sendInit(false, 2);
             PushEventW(L"配置完成！全时监听 iPhone 中...");

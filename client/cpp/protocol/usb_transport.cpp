@@ -190,11 +190,13 @@ void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
                     PushEventW(L"USB设备: VID=0x%04X PID=0x%04X", d.idVendor, d.idProduct);
                     if (d.idVendor == vid && d.idProduct == pid) {
                         impl_->dev = list[i];
+                        list[i] = nullptr; // 重要：从列表中移出，防止被下方 RelDevList 释放！
                         break;
                     }
                 }
             }
-            impl_->RelDevList(impl_->drv, list, 8);
+            // 释放除已匹配盒子之外的其它设备
+            impl_->RelDevList(impl_->drv, list, actual);
         }
         if (!impl_->dev) Sleep(1000);
     }
@@ -203,12 +205,18 @@ void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
 }
 
 bool UsbTransport_CE::claim() {
-    if (!impl_->dev) return false;
+    if (!impl_->dev) {
+        PushEventW(L"ERR: claim失败 (设备句柄为空)");
+        return false;
+    }
     if (impl_->claimed) return true;  // already claimed by us
     if (impl_->Claim(impl_->dev, 0)) {
         impl_->claimed = true;
+        PushEventW(L"OK: UkwClaimInterface 接口0 认领成功");
         return true;
     }
+    DWORD err = GetLastError();
+    PushEventW(L"ERR: UkwClaimInterface 失败 err=%u", err);
     return false;
 }
 
@@ -221,9 +229,11 @@ void UsbTransport_CE::submitRead(std::size_t, RecvCallback cb) {
         [](LPVOID arg) -> DWORD {
             Impl *im = static_cast<Impl *>(arg);
             std::vector<uint8_t> buf(64 * 1024);
+            // UKW_TF_IN_TRANSFER (0x01) | UKW_TF_SHORT_TRANSFER_OK (0x200)
+            const DWORD in_flags = 0x00000001 | 0x00000200;
             while (InterlockedCompareExchange(&im->reader_running, 1, 1) == 1) {
                 DWORD rx = 0;
-                BOOL ok = im->BulkXfer(im->dev, 1 /*IN*/, 0x81,
+                BOOL ok = im->BulkXfer(im->dev, in_flags, 0x81,
                                        buf.data(),
                                        static_cast<DWORD>(buf.size()),
                                        &rx, nullptr);
@@ -237,7 +247,9 @@ void UsbTransport_CE::submitRead(std::size_t, RecvCallback cb) {
 void UsbTransport_CE::write(const uint8_t *data, std::size_t len) {
     if (!impl_->dev || !impl_->BulkXfer) return;
     DWORD tx = 0;
-    impl_->BulkXfer(impl_->dev, 0 /*OUT*/, 0x02,
+    // UKW_TF_OUT_TRANSFER (0x00)
+    const DWORD out_flags = 0x00000000;
+    impl_->BulkXfer(impl_->dev, out_flags, 0x02,
                     const_cast<uint8_t *>(data), static_cast<DWORD>(len),
                     &tx, nullptr);
 }
@@ -249,9 +261,15 @@ void UsbTransport_CE::close() {
         CloseHandle(impl_->reader_thread);
         impl_->reader_thread = nullptr;
     }
-    if (impl_->dev && impl_->Release && impl_->claimed) impl_->Release(impl_->dev, 0);
-    impl_->claimed = false;
-    impl_->dev = nullptr;
+    if (impl_->dev && impl_->Release && impl_->claimed) {
+        impl_->Release(impl_->dev, 0);
+        impl_->claimed = false;
+    }
+    if (impl_->dev && impl_->RelDevList && impl_->drv != INVALID_HANDLE_VALUE) {
+        void *one[1] = { impl_->dev };
+        impl_->RelDevList(impl_->drv, one, 1);
+        impl_->dev = nullptr;
+    }
     if (impl_->drv != INVALID_HANDLE_VALUE && impl_->Close) {
         impl_->Close(impl_->drv);
         impl_->drv = INVALID_HANDLE_VALUE;
