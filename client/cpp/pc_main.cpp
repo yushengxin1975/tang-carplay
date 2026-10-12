@@ -65,6 +65,7 @@ static std::vector<uint8_t> g_sps_pps;
 static bool g_send_sps_pps = false;
 static carlinkit::WavePlayer g_wave_player;
 static bool g_enable_audio = true;
+static std::vector<uint8_t> g_ctrl_rx_buf;
 
 static const char *cmdName(uint32_t c) {
     switch (c) {
@@ -193,9 +194,20 @@ int main(int argc, char **argv) {
                     int rc = send(g_video_client, reinterpret_cast<const char *>(h264),
                                   static_cast<int>(h264_len), 0);
                     if (rc <= 0) {
-                        CLOSE_SOCK(g_video_client);
-                        g_video_client = INVALID_SOCKET;
-                        std::printf("[STREAM] video viewer disconnected\n");
+#ifdef _WIN32
+                        int err = WSAGetLastError();
+                        if (err != WSAEWOULDBLOCK) {
+                            CLOSE_SOCK(g_video_client);
+                            g_video_client = INVALID_SOCKET;
+                            std::printf("[STREAM] video viewer disconnected (err=%d)\n", err);
+                        }
+#else
+                        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                            CLOSE_SOCK(g_video_client);
+                            g_video_client = INVALID_SOCKET;
+                            std::printf("[STREAM] video viewer disconnected\n");
+                        }
+#endif
                     }
                 }
             }
@@ -329,17 +341,26 @@ int main(int argc, char **argv) {
                         std::printf("[CTRL] control client connected\n");
                     }
                 } else {
-                    uint8_t cbuf[16];
-                    int r = recv(g_ctrl_client, reinterpret_cast<char *>(cbuf), sizeof(cbuf), 0);
-                    if (r >= 12) {
-                        uint32_t act = Message::read_u32_le(cbuf);
-                        uint32_t tx  = Message::read_u32_le(cbuf + 4);
-                        uint32_t ty  = Message::read_u32_le(cbuf + 8);
-                        conn->send(Message::Touch(act, tx, ty));
-                        std::printf("[TOUCH] act=%u x=%u y=%u\n", act, tx, ty);
+                    uint8_t tmp[256];
+                    int r = recv(g_ctrl_client, reinterpret_cast<char *>(tmp), sizeof(tmp), 0);
+                    if (r > 0) {
+                        g_ctrl_rx_buf.insert(g_ctrl_rx_buf.end(), tmp, tmp + r);
+                        while (g_ctrl_rx_buf.size() >= 12) {
+                            uint32_t act = Message::read_u32_le(g_ctrl_rx_buf.data());
+                            uint32_t tx  = Message::read_u32_le(g_ctrl_rx_buf.data() + 4);
+                            uint32_t ty  = Message::read_u32_le(g_ctrl_rx_buf.data() + 8);
+                            g_ctrl_rx_buf.erase(g_ctrl_rx_buf.begin(), g_ctrl_rx_buf.begin() + 12);
+                            if (act >= 14 && act <= 16 && tx <= 10000 && ty <= 10000) {
+                                conn->send(Message::Touch(act, tx, ty));
+                                std::printf("[TOUCH] act=%u x=%u y=%u\n", act, tx, ty);
+                            } else {
+                                std::printf("[TOUCH-DISCARD] invalid act=%u x=%u y=%u\n", act, tx, ty);
+                            }
+                        }
                     } else if (r == 0) {
                         CLOSE_SOCK(g_ctrl_client);
                         g_ctrl_client = INVALID_SOCKET;
+                        g_ctrl_rx_buf.clear();
                         std::printf("[CTRL] control client disconnected\n");
                     }
                 }

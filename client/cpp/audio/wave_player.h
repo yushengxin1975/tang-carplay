@@ -101,26 +101,8 @@ public:
             }
         }
 
-        // If ring buffer is saturated, wait briefly for oldest buffer to complete
-        if (!slot) {
-            for (int retry = 0; retry < 8; ++retry) {
-                Sleep(5);
-                cleanup_done_buffers();
-                for (std::size_t i = 0; i < NUM_BUFFERS; ++i) {
-                    if (!buffers_[i].in_use) {
-                        slot = &buffers_[i];
-                        next_buf_ = (i + 1) % NUM_BUFFERS;
-                        break;
-                    }
-                }
-                if (slot) break;
-            }
-        }
-
-        if (!slot) {
-            // Drop buffer if audio output pipeline is jammed
-            return;
-        }
+        // If ring buffer is temporarily saturated, do not block USB read pump
+        if (!slot) return;
 
         slot->data.assign(pcm, pcm + len);
         std::memset(&slot->hdr, 0, sizeof(WAVEHDR));
