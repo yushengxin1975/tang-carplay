@@ -89,35 +89,44 @@ def ensure_daemon():
     except Exception:
         pass
 
-    # Find pc_main.exe
+    # Find pc_main.exe relative to script directory
+    base_dir = os.path.dirname(os.path.abspath(__file__))
     candidates = [
-        os.path.join("dist_final", "build", "pc_main.exe"),
-        os.path.join("build", "pc_main.exe"),
-        "pc_main.exe",
+        os.path.join(base_dir, "dist_final", "build", "pc_main.exe"),
+        os.path.join(base_dir, "..", "dist_final", "build", "pc_main.exe"),
+        os.path.join(base_dir, "build", "pc_main.exe"),
+        os.path.join(base_dir, "pc_main.exe"),
+        r"C:\tang-carplay\dist_final\build\pc_main.exe",
     ]
     exe_path = None
     for c in candidates:
         if os.path.isfile(c):
-            exe_path = c
+            exe_path = os.path.abspath(c)
             break
 
     if not exe_path:
-        print(f"[DAEMON] Warning: pc_main.exe not found in {[os.path.abspath(c) for c in candidates]}")
+        print(f"[DAEMON] Warning: pc_main.exe not found in candidates: {candidates}")
         return None
 
     print(f"[DAEMON] Launching {exe_path}...")
-    cwd = os.path.dirname(os.path.abspath(exe_path))
-    proc = subprocess.Popen([os.path.abspath(exe_path), "--stream", str(STREAM_PORT), "--ctrl", str(CTRL_PORT)],
-                            cwd=cwd)
-    # Wait up to 3 seconds for port to open
-    for _ in range(30):
+    cwd = os.path.dirname(exe_path)
+    log_path = os.path.join(cwd, "pc_main_daemon.log")
+    log_f = open(log_path, "w", encoding="utf-8", buffering=1)
+    proc = subprocess.Popen(
+        [exe_path, "--stream", str(STREAM_PORT), "--ctrl", str(CTRL_PORT)],
+        cwd=cwd,
+        stdout=log_f,
+        stderr=subprocess.STDOUT
+    )
+    # Wait up to 5 seconds for port to open
+    for _ in range(50):
         time.sleep(0.1)
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(0.2)
         try:
             s.connect((STREAM_HOST, STREAM_PORT))
             s.close()
-            print(f"[DAEMON] pc_main.exe successfully started and listening on port {STREAM_PORT}!")
+            print(f"[DAEMON] pc_main.exe successfully started (PID {proc.pid}) and listening on port {STREAM_PORT}!")
             break
         except Exception:
             pass
