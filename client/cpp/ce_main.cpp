@@ -4,7 +4,7 @@
 // 启动后弹一个全屏窗口（1024x600）：
 //   - 顶部适配比亚迪原车状态栏（y >= 48 开始绘制，不被顶栏遮挡）
 //   - 右上角 [ 退出 EXIT ] 实体大按钮，单次点击安全退出
-//   - 独立音量触控调节 [ 🔉 - ] [ 🔊 + ] 与方向盘/旋钮实体按键映射
+//   - 独立音量触控调节 [ 音量 - ] [ 音量 + ] 与方向盘/旋钮实体按键映射
 //   - 全屏深色质感座舱仪表盘：连接状态卡片 + 实时遥测卡片 + 诊断日志终端
 //   - 会话拉起后全屏显示真实 Apple CarPlay 视频流（FFmpeg H.264 硬件/软件极速解码，RGB565 直推）
 //   - 全原生 Unicode (WCHAR) 绘制，彻底消除中文乱码
@@ -196,38 +196,38 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 
         // 1. Diagnostic Mode Button Interceptions
         if (!isCarplay) {
-            // [ 退出 EXIT ] button (x: 870..995, y: 50..92)
-            if (px >= 860 && px <= 1010 && py >= 45 && py <= 98) {
+            // [ 退出 EXIT ] button (x: 875..1010, y: 45..98)
+            if (px >= 875 && px <= 1010 && py >= 45 && py <= 98) {
                 LogDebugW(L"[EXIT] Diagnostic screen EXIT button clicked");
                 PostQuitMessage(0);
                 return 0;
             }
-            // Volume [ 🔉 - ] (x: 640..710, y: 50..92)
-            if (px >= 640 && px <= 710 && py >= 45 && py <= 98) {
+            // Volume [ 音量 - ] (x: 595..710, y: 45..98)
+            if (px >= 595 && px <= 710 && py >= 45 && py <= 98) {
                 AdjustVolume(-10);
                 return 0;
             }
-            // Volume [ 🔊 + ] (x: 770..840, y: 50..92)
-            if (px >= 770 && px <= 840 && py >= 45 && py <= 98) {
+            // Volume [ 音量 + ] (x: 760..875, y: 45..98)
+            if (px >= 760 && px <= 875 && py >= 45 && py <= 98) {
                 AdjustVolume(+10);
                 return 0;
             }
         } else {
             // 2. CarPlay Overlay Button Interceptions (top floating bar y <= 44)
             if (py <= 44) {
-                // Exit button (x: 880..1010)
-                if (px >= 880 && px <= 1010) {
+                // Exit button (x: 865..1010)
+                if (px >= 865 && px <= 1010) {
                     LogDebugW(L"[EXIT] CarPlay overlay EXIT button clicked");
                     PostQuitMessage(0);
                     return 0;
                 }
-                // Volume [-] (x: 640..710)
-                if (px >= 640 && px <= 710) {
+                // Volume [-] (x: 610..705)
+                if (px >= 610 && px <= 705) {
                     AdjustVolume(-10);
                     return 0;
                 }
-                // Volume [+] (x: 800..870)
-                if (px >= 800 && px <= 870) {
+                // Volume [+] (x: 760..855)
+                if (px >= 760 && px <= 855) {
                     AdjustVolume(+10);
                     return 0;
                 }
@@ -317,7 +317,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                               DIB_RGB_COLORS);
 
             // 2. Translucent floating top overlay bar for Exit and Volume
-            RECT barRc = {630, 4, 1010, 40};
+            // 2. Translucent floating top overlay bar for Exit and Volume
+            RECT barRc = {610, 4, 1010, 40};
             HBRUSH barBr = CreateSolidBrush(RGB(18, 24, 32));
             FillRect(memDC, &barRc, barBr);
             DeleteObject(barBr);
@@ -334,31 +335,39 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 
             SetBkMode(memDC, TRANSPARENT);
 
-            // [ 🔉 - ] button
+            // [ 音量 - ] button
+            RECT vmRc = {618, 8, 698, 36};
+            HBRUSH vmBr = CreateSolidBrush(RGB(32, 44, 60));
+            FillRect(memDC, &vmRc, vmBr);
+            DeleteObject(vmBr);
             SetTextColor(memDC, RGB(180, 220, 255));
-            WCHAR vmTxt[] = L"🔉 -";
-            ExtTextOutW(memDC, 650, 12, 0, nullptr, vmTxt, wcslen(vmTxt), nullptr);
+            WCHAR vmTxt[] = L"音量 -";
+            ExtTextOutW(memDC, 630, 12, 0, nullptr, vmTxt, wcslen(vmTxt), nullptr);
 
             // Current Volume
             WCHAR volStr[32];
-            _snwprintf(volStr, 31, L"音量 %d%%", g_current_volume);
+            _snwprintf(volStr, 31, L"%d%%", g_current_volume);
             SetTextColor(memDC, RGB(255, 255, 255));
-            ExtTextOutW(memDC, 725, 12, 0, nullptr, volStr, wcslen(volStr), nullptr);
+            ExtTextOutW(memDC, 715, 12, 0, nullptr, volStr, wcslen(volStr), nullptr);
 
-            // [ 🔊 + ] button
+            // [ 音量 + ] button
+            RECT vpRc = {768, 8, 848, 36};
+            HBRUSH vpBr = CreateSolidBrush(RGB(32, 44, 60));
+            FillRect(memDC, &vpRc, vpBr);
+            DeleteObject(vpBr);
             SetTextColor(memDC, RGB(180, 220, 255));
-            WCHAR vpTxt[] = L"🔊 +";
-            ExtTextOutW(memDC, 820, 12, 0, nullptr, vpTxt, wcslen(vpTxt), nullptr);
+            WCHAR vpTxt[] = L"音量 +";
+            ExtTextOutW(memDC, 780, 12, 0, nullptr, vpTxt, wcslen(vpTxt), nullptr);
 
             // [ 退出 EXIT ] button
-            RECT exRc = {885, 8, 1000, 36};
+            RECT exRc = {868, 8, 1000, 36};
             HBRUSH exBr = CreateSolidBrush(RGB(48, 62, 82));
             FillRect(memDC, &exRc, exBr);
             DeleteObject(exBr);
 
             SetTextColor(memDC, RGB(255, 220, 120));
             WCHAR exTxt[] = L"退出 EXIT";
-            ExtTextOutW(memDC, 905, 12, 0, nullptr, exTxt, wcslen(exTxt), nullptr);
+            ExtTextOutW(memDC, 895, 12, 0, nullptr, exTxt, wcslen(exTxt), nullptr);
 
         } else {
             // ================= Mode B: Cockpit Diagnostic Dashboard =================
@@ -392,49 +401,69 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             WCHAR subW[] = L"比亚迪·唐 (2015旗舰版) · 独立流媒体客户端";
             ExtTextOutW(memDC, 28, 74, 0, nullptr, subW, wcslen(subW), nullptr);
 
-            // Volume Controls [ 🔉 - ] [ 音量 100% ] [ 🔊 + ]
-            RECT vDownRc = {640, 50, 710, 92};
-            HBRUSH vDownBr = CreateSolidBrush(RGB(32, 42, 56));
+            // Volume Controls [ 音量 - ] [ 100% ] [ 音量 + ] [ 退出 EXIT ]
+            RECT vDownRc = {600, 50, 700, 92};
+            HBRUSH vDownBr = CreateSolidBrush(RGB(32, 44, 60));
             FillRect(memDC, &vDownRc, vDownBr);
             DeleteObject(vDownBr);
 
+            HPEN vDownPen = CreatePen(PS_SOLID, 1, RGB(70, 95, 125));
+            HPEN oldP1 = static_cast<HPEN>(SelectObject(memDC, vDownPen));
+            MoveToEx(memDC, vDownRc.left, vDownRc.top, nullptr);
+            LineTo(memDC, vDownRc.right, vDownRc.top);
+            LineTo(memDC, vDownRc.right, vDownRc.bottom);
+            LineTo(memDC, vDownRc.left, vDownRc.bottom);
+            LineTo(memDC, vDownRc.left, vDownRc.top);
+            SelectObject(memDC, oldP1);
+            DeleteObject(vDownPen);
+
             SetTextColor(memDC, RGB(180, 225, 255));
-            WCHAR vDownTxt[] = L"🔉 -";
-            ExtTextOutW(memDC, 655, 60, 0, nullptr, vDownTxt, wcslen(vDownTxt), nullptr);
+            WCHAR vDownTxt[] = L"音量 -";
+            ExtTextOutW(memDC, 625, 60, 0, nullptr, vDownTxt, wcslen(vDownTxt), nullptr);
 
             WCHAR vCurTxt[32];
             _snwprintf(vCurTxt, 31, L"%d%%", curVol);
             SetTextColor(memDC, RGB(255, 255, 255));
-            ExtTextOutW(memDC, 725, 60, 0, nullptr, vCurTxt, wcslen(vCurTxt), nullptr);
+            ExtTextOutW(memDC, 720, 60, 0, nullptr, vCurTxt, wcslen(vCurTxt), nullptr);
 
-            RECT vUpRc = {770, 50, 840, 92};
-            HBRUSH vUpBr = CreateSolidBrush(RGB(32, 42, 56));
+            RECT vUpRc = {765, 50, 865, 92};
+            HBRUSH vUpBr = CreateSolidBrush(RGB(32, 44, 60));
             FillRect(memDC, &vUpRc, vUpBr);
             DeleteObject(vUpBr);
 
+            HPEN vUpPen = CreatePen(PS_SOLID, 1, RGB(70, 95, 125));
+            HPEN oldP2 = static_cast<HPEN>(SelectObject(memDC, vUpPen));
+            MoveToEx(memDC, vUpRc.left, vUpRc.top, nullptr);
+            LineTo(memDC, vUpRc.right, vUpRc.top);
+            LineTo(memDC, vUpRc.right, vUpRc.bottom);
+            LineTo(memDC, vUpRc.left, vUpRc.bottom);
+            LineTo(memDC, vUpRc.left, vUpRc.top);
+            SelectObject(memDC, oldP2);
+            DeleteObject(vUpPen);
+
             SetTextColor(memDC, RGB(180, 225, 255));
-            WCHAR vUpTxt[] = L"🔊 +";
-            ExtTextOutW(memDC, 785, 60, 0, nullptr, vUpTxt, wcslen(vUpTxt), nullptr);
+            WCHAR vUpTxt[] = L"音量 +";
+            ExtTextOutW(memDC, 790, 60, 0, nullptr, vUpTxt, wcslen(vUpTxt), nullptr);
 
             // Top-right EXIT Button: [ 退出 EXIT ]
-            RECT btnRc = {870, 50, 995, 92};
+            RECT btnRc = {880, 50, 1000, 92};
             HBRUSH btnBr = CreateSolidBrush(RGB(38, 50, 66));
             FillRect(memDC, &btnRc, btnBr);
             DeleteObject(btnBr);
 
             HPEN btnPen = CreatePen(PS_SOLID, 1, RGB(80, 110, 145));
-            HPEN oldP = static_cast<HPEN>(SelectObject(memDC, btnPen));
+            HPEN oldP3 = static_cast<HPEN>(SelectObject(memDC, btnPen));
             MoveToEx(memDC, btnRc.left, btnRc.top, nullptr);
             LineTo(memDC, btnRc.right, btnRc.top);
             LineTo(memDC, btnRc.right, btnRc.bottom);
             LineTo(memDC, btnRc.left, btnRc.bottom);
             LineTo(memDC, btnRc.left, btnRc.top);
-            SelectObject(memDC, oldP);
+            SelectObject(memDC, oldP3);
             DeleteObject(btnPen);
 
             SetTextColor(memDC, RGB(230, 245, 255));
             WCHAR exitTxt[] = L"退出 EXIT";
-            ExtTextOutW(memDC, 898, 60, 0, nullptr, exitTxt, wcslen(exitTxt), nullptr);
+            ExtTextOutW(memDC, 905, 60, 0, nullptr, exitTxt, wcslen(exitTxt), nullptr);
 
             // 3. Card 1: Connection Status Card
             RECT c1Rc = {24, 106, 584, 290};
