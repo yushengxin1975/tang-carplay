@@ -101,20 +101,27 @@ public:
     }
 
     bool decode_frame(const uint8_t *h264, size_t len, uint8_t *out_rgb565, int stride,
-                      int *out_w = nullptr, int *out_h = nullptr) {
-        if (!ready_ || !h264 || len == 0 || !out_rgb565) return false;
+                      int *out_w = nullptr, int *out_h = nullptr, bool flip_vertical = false) {
+        if (!ready_ || !h264 || len == 0 || !out_rgb565 || !codec_ctx_ || !frame_) return false;
 
-        uint8_t pkt_buf[128];
-        std::memset(pkt_buf, 0, sizeof(pkt_buf));
-        p_av_init_packet(pkt_buf);
-        *reinterpret_cast<uint8_t**>(pkt_buf + 0x18) = const_cast<uint8_t*>(h264);
-        *reinterpret_cast<int*>(pkt_buf + 0x1C) = static_cast<int>(len);
+        // Guaranteed 8-byte aligned packet structure to prevent ARM LDM/LDRD alignment exceptions
+        struct alignas(8) AlignedPkt {
+            uint8_t bytes[128];
+        } pkt;
+        std::memset(&pkt, 0, sizeof(pkt));
+        p_av_init_packet(&pkt);
+        *reinterpret_cast<uint8_t**>(pkt.bytes + 0x18) = const_cast<uint8_t*>(h264);
+        *reinterpret_cast<int*>(pkt.bytes + 0x1C) = static_cast<int>(len);
 
         int got_picture = 0;
-        int ret = p_avcodec_decode_video2(codec_ctx_, frame_, &got_picture, pkt_buf);
+        int ret = p_avcodec_decode_video2(codec_ctx_, frame_, &got_picture, &pkt);
         if (ret < 0 || !got_picture) {
             return false;
         }
+
+        uint8_t **srcData = reinterpret_cast<uint8_t**>(frame_);
+        int *srcStride = reinterpret_cast<int*>(reinterpret_cast<char*>(frame_) + 0x20);
+        if (!srcData || !srcData[0]) return false;
 
         int fw = *reinterpret_cast<int*>(reinterpret_cast<char*>(frame_) + 0x44);
         int fh = *reinterpret_cast<int*>(reinterpret_cast<char*>(frame_) + 0x48);
@@ -136,13 +143,16 @@ public:
 
         if (!sws_ctx_) return false;
 
-        uint8_t **srcData = reinterpret_cast<uint8_t**>(frame_);
-        int *srcStride = reinterpret_cast<int*>(reinterpret_cast<char*>(frame_) + 0x20);
-
-        uint8_t *dstData[4] = { out_rgb565, nullptr, nullptr, nullptr };
-        int dstStride[4] = { stride, 0, 0, 0 };
-
-        p_sws_scale(sws_ctx_, srcData, srcStride, 0, fh, dstData, dstStride);
+        if (flip_vertical) {
+            // Write bottom-up directly for WinCE GDI SetDIBitsToDevice
+            uint8_t *dstData[4] = { out_rgb565 + (600 - 1) * stride, nullptr, nullptr, nullptr };
+            int dstStride[4] = { -stride, 0, 0, 0 };
+            p_sws_scale(sws_ctx_, srcData, srcStride, 0, fh, dstData, dstStride);
+        } else {
+            uint8_t *dstData[4] = { out_rgb565, nullptr, nullptr, nullptr };
+            int dstStride[4] = { stride, 0, 0, 0 };
+            p_sws_scale(sws_ctx_, srcData, srcStride, 0, fh, dstData, dstStride);
+        }
         return true;
     }
 
@@ -169,8 +179,25 @@ public:
 
 private:
     static HMODULE load_dll(const WCHAR *dll_name) {
+        // 1. Try executable's own directory
+        WCHAR exeDir[MAX_PATH];
+        if (GetModuleFileNameW(nullptr, exeDir, MAX_PATH) > 0) {
+            WCHAR *slash = wcsrchr(exeDir, L'\\');
+            if (slash) {
+                *(slash + 1) = L'\0';
+                WCHAR full[MAX_PATH];
+                _snwprintf(full, MAX_PATH - 1, L"%s%s", exeDir, dll_name);
+                full[MAX_PATH - 1] = 0;
+                HMODULE h = LoadLibraryW(full);
+                if (h) return h;
+            }
+        }
+
+        // 2. Try standard search path
         HMODULE h = LoadLibraryW(dll_name);
         if (h) return h;
+
+        // 3. Known mount points
         const WCHAR *paths[] = {
             L"\\Storage Card\\gps_byd\\",
             L"\\StorageCard\\gps_byd\\",
@@ -251,7 +278,7 @@ class H264Decoder_CE {
 public:
     bool init() { return true; }
     bool is_ready() const { return true; }
-    bool decode_frame(const uint8_t*, size_t, uint8_t*, int, int* = nullptr, int* = nullptr) { return false; }
+    bool decode_frame(const uint8_t*, size_t, uint8_t*, int, int* = nullptr, int* = nullptr, bool = false) { return false; }
     void close() {}
 };
 

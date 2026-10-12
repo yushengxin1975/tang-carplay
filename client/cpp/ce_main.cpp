@@ -56,17 +56,59 @@ static carlinkit::WavePlayer g_ce_wave_player;
 static carlinkit::Connection *g_conn = nullptr;
 static carlinkit::H264Decoder_CE g_decoder;
 
-// Video frame rendering surface
-static HBITMAP g_hCarplayBmp = nullptr;
-static void   *g_pCarplayBits = nullptr;
-static HDC     g_carplayMemDC = nullptr;
+// Video frame rendering surface (1024x600 16bpp RGB565)
+// Static 8-byte aligned BSS buffer — zero allocation failure risk, never NULL
+static alignas(8) uint16_t g_carplay_pixels[1024 * 600];
 static volatile BOOL g_has_carplay_frame = FALSE;
+
+struct CarplayBmi {
+    BITMAPINFOHEADER bmiHeader;
+    DWORD bmiColors[3];
+};
+static const CarplayBmi g_carplay_bmi = {
+    { sizeof(BITMAPINFOHEADER), 1024, 600, 1, 16, BI_BITFIELDS, 1024 * 600 * 2, 0, 0, 0, 0 },
+    { 0xF800, 0x07E0, 0x001F }
+};
 
 // Video packet queue for decoupled decoding thread
 static CRITICAL_SECTION g_vid_cs;
 static HANDLE g_hVidEvent = nullptr;
 static std::vector<uint8_t> g_pending_video;
 static volatile BOOL g_has_pending_video = FALSE;
+
+// Persistent diagnostic file logging
+static FILE *g_logFile = nullptr;
+
+static void InitLogging() {
+    WCHAR exePath[MAX_PATH];
+    if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) > 0) {
+        WCHAR *pSlash = wcsrchr(exePath, L'\\');
+        if (pSlash) {
+            *(pSlash + 1) = L'\0';
+            wcscat(exePath, L"carplay.log");
+            g_logFile = _wfopen(exePath, L"a+");
+            if (g_logFile) {
+                fwprintf(g_logFile, L"\n=== CarPlay Startup (Tick=%u) ===\n", GetTickCount());
+                fflush(g_logFile);
+            }
+        }
+    }
+}
+
+static void LogDebugW(const WCHAR *fmt, ...) {
+    WCHAR buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    _vsnwprintf(buf, 511, fmt, ap);
+    va_end(ap);
+    buf[511] = L'\0';
+
+    if (g_logFile) {
+        fwprintf(g_logFile, L"[%u] %s\n", GetTickCount(), buf);
+        fflush(g_logFile);
+    }
+    OutputDebugStringW(buf);
+}
 
 void SetLineW(int i, const WCHAR *fmt, ...) {
     if (i < 0 || i > 3) return;
@@ -83,6 +125,8 @@ void PushEventW(const WCHAR *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     _vsnwprintf(g_events[g_evtHead], EVT_LEN - 1, fmt, ap);
     va_end(ap);
+    g_events[g_evtHead][EVT_LEN - 1] = L'\0';
+    LogDebugW(L"[EVT] %s", g_events[g_evtHead]);
     g_evtHead = (g_evtHead + 1) % EVT_LINES;
     if (g_evtN < EVT_LINES) g_evtN++;
     LeaveCriticalSection(&g_cs);
@@ -132,10 +176,17 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         int px = LOWORD(lp), py = HIWORD(lp);
         BOOL isCarplay = g_has_carplay_frame;
 
+        // 0. Filter spurious (0, 0) noise
+        if (px == 0 && py == 0) {
+            LogDebugW(L"[TOUCH] Ignored spurious (0,0) tap");
+            return 0;
+        }
+
         // 1. Diagnostic Mode Button Interceptions
         if (!isCarplay) {
             // [ 退出 EXIT ] button (x: 870..995, y: 50..92)
             if (px >= 860 && px <= 1010 && py >= 45 && py <= 98) {
+                LogDebugW(L"[EXIT] Diagnostic screen EXIT button clicked");
                 PostQuitMessage(0);
                 return 0;
             }
@@ -154,6 +205,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (py <= 44) {
                 // Exit button (x: 880..1010)
                 if (px >= 880 && px <= 1010) {
+                    LogDebugW(L"[EXIT] CarPlay overlay EXIT button clicked");
                     PostQuitMessage(0);
                     return 0;
                 }
@@ -171,13 +223,20 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             }
         }
 
-        // 3. Top-left corner (80x80) emergency double-tap to return to car
-        if (px < 80 && py < 80) {
+        // 3. Top-left corner (10..60, 10..60) emergency triple-tap to return to car
+        if (px >= 10 && px <= 60 && py >= 10 && py <= 60) {
             static DWORD last_exit_tap = 0;
+            static int exit_tap_count = 0;
             DWORD now = GetTickCount();
             if (now - last_exit_tap < 600) {
-                PostQuitMessage(0);
-                return 0;
+                exit_tap_count++;
+                if (exit_tap_count >= 3) {
+                    LogDebugW(L"[EXIT] Emergency triple-tap triggered exit");
+                    PostQuitMessage(0);
+                    return 0;
+                }
+            } else {
+                exit_tap_count = 1;
             }
             last_exit_tap = now;
         }
@@ -237,10 +296,13 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         HBITMAP memBmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
         HBITMAP oldBmp = static_cast<HBITMAP>(SelectObject(memDC, memBmp));
 
-        if (g_has_carplay_frame && g_carplayMemDC) {
+        if (g_has_carplay_frame) {
             // ================= Mode A: Active Apple CarPlay Display =================
-            // 1. Blast decoded RGB565 CarPlay video frame
-            BitBlt(memDC, 0, 0, 1024, 600, g_carplayMemDC, 0, 0, SRCCOPY);
+            // 1. Direct blast decoded RGB565 CarPlay video frame
+            SetDIBitsToDevice(memDC, 0, 0, 1024, 600, 0, 0, 0, 600,
+                              g_carplay_pixels,
+                              reinterpret_cast<const BITMAPINFO*>(&g_carplay_bmi),
+                              DIB_RGB_COLORS);
 
             // 2. Translucent floating top overlay bar for Exit and Volume
             RECT barRc = {630, 4, 1010, 40};
@@ -494,6 +556,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 // ---------------- Video Decoding Worker Thread ----------------
 static DWORD WINAPI VideoDecodeThread(LPVOID) {
     std::vector<uint8_t> nal_buffer;
+    LogDebugW(L"[VID] VideoDecodeThread started");
     while (InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&g_running), 1, 1) == 1) {
         DWORD waitRes = WaitForSingleObject(g_hVidEvent, 50);
         if (waitRes == WAIT_OBJECT_0) {
@@ -506,11 +569,21 @@ static DWORD WINAPI VideoDecodeThread(LPVOID) {
             }
             LeaveCriticalSection(&g_vid_cs);
 
-            if (!nal_buffer.empty() && g_pCarplayBits && g_decoder.is_ready()) {
+            if (!nal_buffer.empty() && g_decoder.is_ready()) {
                 int fw = 0, fh = 0;
-                if (g_decoder.decode_frame(nal_buffer.data(), nal_buffer.size(),
-                                          reinterpret_cast<uint8_t*>(g_pCarplayBits),
-                                          1024 * 2, &fw, &fh)) {
+                size_t actual_len = (nal_buffer.size() > 64) ? (nal_buffer.size() - 64) : nal_buffer.size();
+                bool ok = false;
+                try {
+                    ok = g_decoder.decode_frame(nal_buffer.data(), actual_len,
+                                                reinterpret_cast<uint8_t*>(g_carplay_pixels),
+                                                1024 * 2, &fw, &fh, /*flip_vertical=*/true);
+                } catch (...) {
+                    LogDebugW(L"[VID] EXCEPTION in decode_frame!");
+                }
+                if (ok) {
+                    if (!g_has_carplay_frame) {
+                        LogDebugW(L"[VID] First CarPlay frame decoded successfully (%dx%d)!", fw, fh);
+                    }
                     g_has_carplay_frame = TRUE;
                     InterlockedIncrement(reinterpret_cast<volatile LONG *>(&g_decoded_frames));
                     if (g_hwnd) InvalidateRect(g_hwnd, nullptr, FALSE);
@@ -518,6 +591,7 @@ static DWORD WINAPI VideoDecodeThread(LPVOID) {
             }
         }
     }
+    LogDebugW(L"[VID] VideoDecodeThread stopped");
     return 0;
 }
 
@@ -578,14 +652,19 @@ static DWORD WINAPI ClientThread(LPVOID) {
             InterlockedIncrement(reinterpret_cast<volatile LONG *>(&g_video_frames));
             if (n > 20) {
                 EnterCriticalSection(&g_vid_cs);
-                g_pending_video.assign(p + 20, p + n);
+                const size_t h264_sz = n - 20;
+                g_pending_video.resize(h264_sz + 64);
+                std::memcpy(g_pending_video.data(), p + 20, h264_sz);
+                std::memset(g_pending_video.data() + h264_sz, 0, 64);
                 g_has_pending_video = TRUE;
                 LeaveCriticalSection(&g_vid_cs);
                 SetEvent(g_hVidEvent);
             }
-            if ((g_video_frames % 30) == 1) {
+            if ((g_video_frames % 60) == 1) {
                 SetLineW(3, L"视频: %u 帧 (解: %u) | 音量: %d%% | 触控: %u",
                          g_video_frames, g_decoded_frames, g_current_volume, g_touch_count);
+                LogDebugW(L"[STATS] Vid=%u (Dec=%u) Aud=%u Touch=%u Vol=%d",
+                          g_video_frames, g_decoded_frames, g_audio_frames, g_touch_count, g_current_volume);
             }
         } else if (c == Cmd::AUDIO_DATA) {
             InterlockedIncrement(reinterpret_cast<volatile LONG *>(&g_audio_frames));
@@ -615,14 +694,6 @@ static DWORD WINAPI ClientThread(LPVOID) {
         }
     };
 
-    // Load H.264 video decoder
-    PushEventW(L"正在初始化 H.264 解码器...");
-    if (g_decoder.init()) {
-        PushEventW(L"OK: H.264 解码器就绪 (FFmpeg 2.x)");
-    } else {
-        PushEventW(L"WARN: 解码器加载失败 (检查 avcodec DLL)");
-    }
-
     // Resilient auto-reconnect loop
     while (InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&g_running), 1, 1) == 1) {
         try {
@@ -642,7 +713,7 @@ static DWORD WINAPI ClientThread(LPVOID) {
             SetLineW(2, L"盒子常驻，插拔 iPhone 即可热拉起");
 
             HANDLE hbeat = CreateThread(nullptr, 256 * 1024, HeartbeatThread,
-                                       nullptr, STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+                                       nullptr, 0, nullptr);
 
             while (InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&g_running), 1, 1) == 1) {
                 Sleep(200);
@@ -682,6 +753,9 @@ static DWORD WINAPI ClientThread(LPVOID) {
 }
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
+    InitLogging();
+    LogDebugW(L"[MAIN] Application starting");
+
     WNDCLASSW wc{};
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInst;
@@ -692,6 +766,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
     int sh = GetSystemMetrics(SM_CYSCREEN);
     if (sw <= 0) sw = 1024;
     if (sh <= 0) sh = 600;
+    LogDebugW(L"[MAIN] Screen resolution: %dx%d", sw, sh);
 
     InitializeCriticalSection(&g_cs);
     InitializeCriticalSection(&g_vid_cs);
@@ -701,39 +776,24 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
                            WS_POPUP | WS_VISIBLE,
                            0, 0, sw, sh, nullptr, nullptr, hInst, nullptr);
 
-    // Setup 1024x600 16bpp DIBSection for CarPlay video frame rendering
-    struct {
-        BITMAPINFOHEADER bmiHeader;
-        DWORD bmiColors[3];
-    } bmi;
-    std::memset(&bmi, 0, sizeof(bmi));
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = 1024;
-    bmi.bmiHeader.biHeight = -600; // Top-down DIB
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 16;
-    bmi.bmiHeader.biCompression = BI_BITFIELDS;
-    bmi.bmiColors[0] = 0xF800; // Red mask
-    bmi.bmiColors[1] = 0x07E0; // Green mask
-    bmi.bmiColors[2] = 0x001F; // Blue mask
-
-    HDC screenDC = GetDC(g_hwnd);
-    g_hCarplayBmp = CreateDIBSection(screenDC, reinterpret_cast<BITMAPINFO*>(&bmi),
-                                     DIB_RGB_COLORS, &g_pCarplayBits, nullptr, 0);
-    g_carplayMemDC = CreateCompatibleDC(screenDC);
-    SelectObject(g_carplayMemDC, g_hCarplayBmp);
-    ReleaseDC(g_hwnd, screenDC);
+    // Initialize H.264 video decoder early before spawning worker threads
+    LogDebugW(L"[MAIN] Initializing H.264 video decoder...");
+    if (g_decoder.init()) {
+        PushEventW(L"OK: H.264 解码器就绪 (FFmpeg 2.x)");
+        LogDebugW(L"[MAIN] OK: H.264 decoder ready");
+    } else {
+        PushEventW(L"WARN: 解码器加载失败 (检查 avcodec DLL)");
+        LogDebugW(L"[MAIN] WARN: H.264 decoder init failed");
+    }
 
     ShowWindow(g_hwnd, nShow ? nShow : SW_SHOW);
     UpdateWindow(g_hwnd);
 
-    // Dedicated video decode thread
-    HANDLE vdt = CreateThread(nullptr, 256 * 1024, VideoDecodeThread, nullptr,
-                              STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+    // Dedicated video decode thread (flags = 0)
+    HANDLE vdt = CreateThread(nullptr, 256 * 1024, VideoDecodeThread, nullptr, 0, nullptr);
 
-    // Main protocol client thread
-    HANDLE ct = CreateThread(nullptr, 256 * 1024, ClientThread, nullptr,
-                             STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+    // Main protocol client thread (flags = 0)
+    HANDLE ct = CreateThread(nullptr, 256 * 1024, ClientThread, nullptr, 0, nullptr);
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0) > 0) {
@@ -753,12 +813,16 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
         CloseHandle(ct);
     }
 
-    if (g_carplayMemDC) DeleteDC(g_carplayMemDC);
-    if (g_hCarplayBmp) DeleteObject(g_hCarplayBmp);
     if (g_hVidEvent) CloseHandle(g_hVidEvent);
 
     DeleteCriticalSection(&g_vid_cs);
     DeleteCriticalSection(&g_cs);
+
+    LogDebugW(L"[MAIN] Application exited cleanly");
+    if (g_logFile) {
+        fclose(g_logFile);
+        g_logFile = nullptr;
+    }
     return 0;
 }
 
