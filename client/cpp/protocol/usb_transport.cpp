@@ -16,6 +16,8 @@
 
 #include <windows.h>
 
+extern void PushEventW(const WCHAR *fmt, ...);
+
 namespace carlinkit {
 
 struct UsbTransport_CE::Impl {
@@ -43,18 +45,18 @@ UsbTransport_CE::UsbTransport_CE() : impl_(new Impl) {}
 UsbTransport_CE::~UsbTransport_CE() { close(); delete impl_; }
 
 static bool EnsureDriverInstalled(const WCHAR *appDir) {
-    WCHAR src[MAX_PATH];
-    _snwprintf(src, MAX_PATH - 1, L"%s\\USBKIT.DLL", appDir);
-    if (GetFileAttributesW(src) == 0xFFFFFFFF) {
-        _snwprintf(src, MAX_PATH - 1, L"%s\\CEUSBBOX.DLL", appDir);
-    }
-    if (GetFileAttributesW(src) == 0xFFFFFFFF) {
-        _snwprintf(src, MAX_PATH - 1, L"%s\\ceusbbox.dll", appDir);
-    }
-    if (GetFileAttributesW(src) == 0xFFFFFFFF) return false;
+    WCHAR srcBox[MAX_PATH] = {0}, srcKit[MAX_PATH] = {0};
+    _snwprintf(srcBox, MAX_PATH - 1, L"%s\\CEUSBBOX.dll", appDir);
+    _snwprintf(srcKit, MAX_PATH - 1, L"%s\\USBKIT.DLL", appDir);
 
-    BOOL winOk = CopyFileW(src, L"\\Windows\\USBKIT.DLL", FALSE);
-    const WCHAR *drvPath = winOk ? L"USBKIT.DLL" : src;
+    // Copy to \Windows under all possible aliases
+    BOOL c1 = CopyFileW(srcBox, L"\\Windows\\ceusbbox.dll", FALSE);
+    CopyFileW(srcBox, L"\\Windows\\CEUSBBOX.DLL", FALSE);
+    CopyFileW(srcKit, L"\\Windows\\USBKIT.DLL", FALSE);
+    CopyFileW(srcBox, L"\\Windows\\ceusbkwrapperdrv.dll", FALSE);
+
+    const WCHAR *drvPath = c1 ? L"ceusbbox.dll" : srcBox;
+    PushEventW(L"驱动复制到 \\Windows: %s", c1 ? L"成功" : L"卡路径备用");
 
     auto regStr = [](HKEY root, const WCHAR *sub, const WCHAR *val, const WCHAR *data) {
         HKEY hk; DWORD disp;
@@ -71,31 +73,43 @@ static bool EnsureDriverInstalled(const WCHAR *appDir) {
         }
     };
 
+    // 1. Usb_Box (Real key expected by ceusbkwrapper.dll)
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\ClientDrivers\\Usb_Box", L"Prefix", L"CBX");
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\ClientDrivers\\Usb_Box", L"Dll", drvPath);
+    regDw(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\ClientDrivers\\Usb_Box", L"Flags", 8);
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\ClientDrivers\\Usb_Box", L"InterfaceFilter_MASS_STORAGE", L"8:*:*");
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\ClientDrivers\\Usb_Box", L"InterfaceFilter_RNDIS_STANDARD", L"2:2:255:!1057");
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\ClientDrivers\\Usb_Box", L"InterfaceFilter_CDC_NCM", L"2:13:*");
+
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\LoadClients\\4884_5408\\Default\\Default\\Usb_Box", L"Dll", drvPath);
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\LoadClients\\4884\\Default\\Default\\Usb_Box", L"Dll", drvPath);
+
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn\\Usb_Box", L"Prefix", L"CBX");
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn\\Usb_Box", L"Dll", drvPath);
+    regDw(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn\\Usb_Box", L"Flags", 16);
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn\\Usb_Box", L"Index", L"0");
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn\\Usb_Box", L"Order", L"0");
+
+    // 2. Usb_Kernel_Wrapper (Fallback)
     regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", L"Prefix", L"UKW");
     regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", L"Dll", drvPath);
     regDw(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", L"Flags", 8);
-    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", L"InterfaceFilter_MASS_STORAGE", L"8:*:*");
-    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", L"InterfaceFilter_RNDIS_STANDARD", L"2:2:255:!1057");
-    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", L"InterfaceFilter_CDC_NCM", L"2:13:*");
-    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\LoadClients\\4884\\Default\\Default\\Usb_Kernel_Wrapper", L"Dll", drvPath);
-    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\LoadClients\\4884_5408\\Default\\Default\\Usb_Kernel_Wrapper", L"Dll", drvPath);
 
-    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", L"Dll", drvPath);
     regStr(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", L"Prefix", L"UKW");
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", L"Dll", drvPath);
     regDw(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", L"Flags", 16);
-    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", L"Index", L"1");
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", L"Index", L"0");
     regStr(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", L"Order", L"0");
 
-    HANDLE h1 = ActivateDeviceEx(L"Drivers\\USB\\ClientDrivers\\Usb_Kernel_Wrapper", NULL, 0, 0);
-    if (h1 && h1 != INVALID_HANDLE_VALUE) CloseHandle(h1);
-    HANDLE h2 = ActivateDeviceEx(L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", NULL, 0, 0);
-    if (h2 && h2 != INVALID_HANDLE_VALUE) CloseHandle(h2);
+    // 3. Pre-activate driver
+    ActivateDevice(L"Drivers\\BuiltIn\\Usb_Box", 0);
+    ActivateDevice(L"Drivers\\USB\\ClientDrivers\\Usb_Box", 0);
+    ActivateDeviceEx(L"Drivers\\BuiltIn\\Usb_Box", NULL, 0, 0);
 
     return true;
 }
 
 void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
-    // Idempotent: caller may open() again via Connection::start().
     if (impl_->dev) return;
     WCHAR dir[MAX_PATH] = {0}, path[MAX_PATH] = {0};
     if (GetModuleFileNameW(NULL, dir, MAX_PATH)) {
@@ -105,9 +119,19 @@ void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
     } else {
         wcscpy(path, L"ceusbkwrapper.dll");
     }
+
+    // Step 1: Pre-install & activate driver
+    EnsureDriverInstalled(dir);
+    Sleep(200);
+
+    // Step 2: Load ceusbkwrapper.dll
     impl_->lib = LoadLibraryW(path);
-    if (!impl_->lib)
-        throw std::runtime_error("CE: LoadLibrary(ceusbkwrapper.dll) failed");
+    if (!impl_->lib) impl_->lib = LoadLibraryW(L"ceusbkwrapper.dll");
+    if (!impl_->lib) {
+        char msg[96];
+        _snprintf(msg, sizeof(msg), "LoadLibrary(ceusbkwrapper.dll) failed err=%u", GetLastError());
+        throw std::runtime_error(msg);
+    }
 
 #define RESOLVE(field, name) \
     impl_->field = reinterpret_cast<decltype(impl_->field)>( \
@@ -129,14 +153,24 @@ void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
     RESOLVE(Close,      "UkwCloseDriver")
 #undef RESOLVE
 
-    impl_->drv = impl_->Open();
-    if (!impl_->drv || impl_->drv == INVALID_HANDLE_VALUE) {
-        EnsureDriverInstalled(dir);
-        Sleep(500);
+    // Step 3: Open the driver (Try CBX0: directly first, then UkwOpenDriver)
+    HANDLE hDriver = CreateFileW(L"CBX0:", GENERIC_READ | GENERIC_WRITE,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                 NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                                 INVALID_HANDLE_VALUE);
+    if (hDriver != INVALID_HANDLE_VALUE) {
+        impl_->drv = hDriver;
+        PushEventW(L"OK: CBX0: 直接打开成功 (0x%08X)", (DWORD)hDriver);
+    } else {
         impl_->drv = impl_->Open();
+        PushEventW(L"UkwOpenDriver 打开结果: 0x%08X (e=%u)", (DWORD)impl_->drv, GetLastError());
     }
-    if (!impl_->drv || impl_->drv == INVALID_HANDLE_VALUE)
-        throw std::runtime_error("CE: UkwOpenDriver failed (USBKIT.DLL registered?)");
+
+    if (!impl_->drv || impl_->drv == INVALID_HANDLE_VALUE) {
+        char msg[128];
+        _snprintf(msg, sizeof(msg), "UkwOpenDriver failed (err=%u)", GetLastError());
+        throw std::runtime_error(msg);
+    }
 
     struct DevDesc {
         unsigned char bLength, bDescriptorType;
@@ -152,15 +186,17 @@ void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
             for (DWORD i = 0; i < actual; ++i) {
                 DevDesc d;
                 memset(&d, 0, sizeof(d));
-                if (impl_->GetDevDesc(list[i], &d) &&
-                    d.idVendor == vid && d.idProduct == pid) {
-                    impl_->dev = list[i];
-                    break;
+                if (impl_->GetDevDesc(list[i], &d)) {
+                    PushEventW(L"USB设备: VID=0x%04X PID=0x%04X", d.idVendor, d.idProduct);
+                    if (d.idVendor == vid && d.idProduct == pid) {
+                        impl_->dev = list[i];
+                        break;
+                    }
                 }
             }
             impl_->RelDevList(impl_->drv, list, 8);
         }
-        if (!impl_->dev) Sleep(2000);
+        if (!impl_->dev) Sleep(1000);
     }
     if (!impl_->dev)
         throw std::runtime_error("CE: Carlinkit box (0x1314:0x1520) not found");
