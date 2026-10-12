@@ -5,6 +5,7 @@
 #include "protocol/connection.h"
 #include "protocol_const.h"
 #include "fake_transport.h"
+#include "audio/wave_player.h"
 
 #include <cstdio>
 #include <cstring>
@@ -275,6 +276,24 @@ static void test_lifecycle() {
     }
 }
 
+static void test_wave_player() {
+    std::printf("[test_wave_player]\n");
+    WavePlayer player;
+    EXPECT(!player.is_open(), "initially closed");
+    EXPECT(player.open(44100, 2, 16), "open 44.1kHz stereo ok");
+    EXPECT(player.sample_rate() == 44100, "sample rate recorded");
+    EXPECT(player.channels() == 2, "channels recorded");
+
+    std::vector<uint8_t> pcm(11520, 0);
+    player.write(pcm.data(), pcm.size());
+    EXPECT(true, "write buffer ok");
+
+    player.reset();
+    EXPECT(true, "reset ok");
+    player.close();
+    EXPECT(!player.is_open(), "closed ok");
+}
+
 int main() {
     std::printf("=== Carlinkit protocol unit tests ===\n");
     test_aes_roundtrip();
@@ -286,6 +305,7 @@ int main() {
     test_aes_cfb_roundtrip();
     test_connection_encrypted();
     test_lifecycle();
+    test_wave_player();
     std::printf("=== %d passed, %d failed ===\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

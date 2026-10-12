@@ -35,7 +35,7 @@ jobs:
 
           EXTRA_LIBS=""
           if [ "${{ runner.os }}" = "Windows" ]; then
-            EXTRA_LIBS="-lws2_32"
+            EXTRA_LIBS="-lws2_32 -lwinmm"
           fi
 
           # Unit tests

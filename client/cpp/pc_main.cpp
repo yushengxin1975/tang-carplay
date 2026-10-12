@@ -20,6 +20,7 @@
 #include "protocol/connection.h"
 #include "protocol/usb_transport.h"
 #include "protocol_const.h"
+#include "audio/wave_player.h"
 
 #include <atomic>
 #include <cstdio>
@@ -62,6 +63,8 @@ static socket_t g_video_client = INVALID_SOCKET;
 static socket_t g_ctrl_client = INVALID_SOCKET;
 static std::vector<uint8_t> g_sps_pps;
 static bool g_send_sps_pps = false;
+static carlinkit::WavePlayer g_wave_player;
+static bool g_enable_audio = true;
 
 static const char *cmdName(uint32_t c) {
     switch (c) {
@@ -135,6 +138,7 @@ int main(int argc, char **argv) {
         else if (!std::strcmp(argv[i], "--clear-halt")) co.clear_halt = true;
         else if (!std::strcmp(argv[i], "--set-config")) co.set_config = true;
         else if (!std::strcmp(argv[i], "--no-alt")) { co.alt_setting = false; co.clear_halt = false; }
+        else if (!std::strcmp(argv[i], "--no-audio")) g_enable_audio = false;
     }
 
     std::printf("=== Carlinkit PC client (protocol bring-up, %s, mode=%d %s) ===\n",
@@ -201,6 +205,29 @@ int main(int argc, char **argv) {
                 aout.write(reinterpret_cast<const char *>(p),
                            static_cast<std::streamsize>(n));
                 adump += n;
+            }
+            if (g_enable_audio) {
+                if (n == 13) {
+                    if (p[12] == 0) {
+                        g_wave_player.reset();
+                    }
+                } else if (n > 12) {
+                    uint32_t fmt = Message::read_u32_le(p);
+                    uint32_t rate = 44100;
+                    uint16_t ch = 2;
+                    switch (fmt) {
+                    case 1: rate = 16000; ch = 1; break;
+                    case 2: rate = 44100; ch = 2; break;
+                    case 3: rate = 8000;  ch = 1; break;
+                    case 4: rate = 48000; ch = 2; break;
+                    case 5: rate = 16000; ch = 1; break;
+                    case 6: rate = 24000; ch = 1; break;
+                    case 7: rate = 16000; ch = 2; break;
+                    default: rate = 44100; ch = 2; break;
+                    }
+                    g_wave_player.open(rate, ch, 16);
+                    g_wave_player.write(p + 12, n - 12);
+                }
             }
         } else {
             std::printf("[MSG %-11s] %4zu bytes", cmdName(static_cast<uint32_t>(c)), n);
@@ -351,6 +378,8 @@ int main(int argc, char **argv) {
     std::printf("audio: %u frames, %llu KB dumped %llu KB\n",
                 g_audio_frames.load(), (unsigned long long)(g_audio_bytes / 1024),
                 (unsigned long long)(adump / 1024));
+
+    g_wave_player.close();
 
     if (g_video_client != INVALID_SOCKET) CLOSE_SOCK(g_video_client);
     if (g_ctrl_client != INVALID_SOCKET) CLOSE_SOCK(g_ctrl_client);

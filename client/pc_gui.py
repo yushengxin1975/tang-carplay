@@ -24,7 +24,7 @@ STREAM_HOST = "127.0.0.1"
 STREAM_PORT = 18888
 CTRL_HOST = "127.0.0.1"
 CTRL_PORT = 18889
-WIN_NAME = "Antigravity CarPlay (1024x600) - Mouse Touch Enabled"
+WIN_NAME = "Antigravity CarPlay (1024x600) | Audio & Touch Enabled"
 WIDTH = 1024
 HEIGHT = 600
 
