@@ -144,7 +144,7 @@ void UsbTransport_CE::submitRead(std::size_t, RecvCallback cb) {
 void UsbTransport_CE::write(const uint8_t *data, std::size_t len) {
     if (!impl_->dev || !impl_->BulkXfer) return;
     DWORD tx = 0;
-    impl_->BulkXfer(impl_->dev, 0 /*OUT*/, 0x01,
+    impl_->BulkXfer(impl_->dev, 0 /*OUT*/, 0x02,
                     const_cast<uint8_t *>(data), static_cast<DWORD>(len),
                     &tx, nullptr);
 }
