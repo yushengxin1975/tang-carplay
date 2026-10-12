@@ -472,7 +472,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             DeleteObject(c1Br);
 
             HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(45, 60, 78));
-            oldP = static_cast<HPEN>(SelectObject(memDC, borderPen));
+            HPEN oldP = static_cast<HPEN>(SelectObject(memDC, borderPen));
             MoveToEx(memDC, c1Rc.left, c1Rc.top, nullptr);
             LineTo(memDC, c1Rc.right, c1Rc.top);
             LineTo(memDC, c1Rc.right, c1Rc.bottom);
