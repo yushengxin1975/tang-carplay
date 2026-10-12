@@ -72,7 +72,7 @@ void Connection::sendInit(bool encrypted, int work_mode) {
     send(Message::String(Cmd::DAYNIGHT, dayNight.c_str()));
 
     send(Message::File("/tmp/night_mode", nightMode));
-    send(Message::File("/tmp/charge_mode", 0));  // weak charge
+    send(Message::File("/tmp/charge_mode", 2));  // normal/strong charge (FastCarPlay/AutoKit default)
     send(Message::File("/etc/box_name", "CarPlay"));
     send(Message::File("/tmp/hand_drive_mode", drivePosition));
 
