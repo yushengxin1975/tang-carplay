@@ -35,6 +35,7 @@ enum class Cmd : uint32_t {
     VIDEO_DATA   = 6,
     AUDIO_DATA   = 7,
     CONTROL      = 8,
+    CMD_9        = 9,
     APP_INFO     = 10,
     BLUETOOTH    = 13,
     WIFI_INFO    = 14,

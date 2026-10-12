@@ -409,6 +409,10 @@ void UsbTransport_PC::submitRead(std::size_t, RecvCallback cb) {
                     }
                     std::this_thread::sleep_for(std::chrono::milliseconds(50));
                     continue;
+                } else if (rc == -1) {
+                    fprintf(stderr, "[USB-READ] transient I/O error (rc=-1), retrying\n");
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    continue;
                 } else if (rc != 0 && rc != -7 && rc != -8) {
                     fprintf(stderr, "[USB-READ] fatal err rc=%d\n", rc);
                     break;
@@ -472,6 +476,10 @@ bool UsbTransport_PC::readPump(int timeout_ms) {
         if (impl_->clear_halt && impl_->devh) {
             impl_->clear_halt(impl_->devh, 0x81);
         }
+        return true;
+    }
+    if (rc == -1) {
+        fprintf(stderr, "[USB-READ] transient I/O error (rc=-1), retrying\n");
         return true;
     }
     if (rc != 0 && rc != -7 && rc != -8) {

@@ -78,6 +78,7 @@ void Connection::sendInit(bool encrypted, int work_mode) {
 
     send(Message::Control(7));    // microphone
     send(Message::Control(13));   // AutoKit standard session control 13
+    send(Message(Cmd::CMD_9, 1, /*encrypt=*/false)); // AutoKit phone discovery command (Cmd 9, val 1)
     send(Message::Control(25));   // wifi 5GHz
     send(Message::Control(23));   // bluetooth audio off
     send(Message::Control(1002)); // autoconnect

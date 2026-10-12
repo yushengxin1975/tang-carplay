@@ -41,7 +41,7 @@ static const char *cmdName(uint32_t c) {
     case 3: return "STATE";      case 4: return "UNPLUGGED";
     case 5: return "TOUCH";      case 6: return "VIDEO";
     case 7: return "AUDIO";      case 8: return "CONTROL";
-    case 10: return "APP_INFO";  case 13: return "BT_INFO";
+    case 9: return "CMD_9";      case 10: return "APP_INFO";
     case 14: return "WIFI_INFO"; case 18: return "DEV_LIST";
     case 20: return "MANUFACTURER"; case 23: return "MULTI_TOUCH";
     case 25: return "JSON_CTRL"; case 42: return "MEDIA_INFO";
