@@ -283,6 +283,7 @@ static void test_wave_player() {
     EXPECT(player.open(44100, 2, 16), "open 44.1kHz stereo ok");
     EXPECT(player.sample_rate() == 44100, "sample rate recorded");
     EXPECT(player.channels() == 2, "channels recorded");
+    EXPECT(player.is_open(), "is_open after open");
 
     std::vector<uint8_t> pcm(11520, 0);
     player.write(pcm.data(), pcm.size());
