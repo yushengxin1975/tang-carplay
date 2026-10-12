@@ -6,6 +6,7 @@
 
 #if defined(__MINGW32CE__) || defined(_WIN32_WCE)
 #  include <windows.h>
+#  include "protocol/message.h"
 #  include "protocol/connection.h"
 #  include "protocol/usb_transport.h"
 #  include <cstdio>

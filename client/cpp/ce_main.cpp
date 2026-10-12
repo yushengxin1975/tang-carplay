@@ -14,6 +14,7 @@
 #include "ce_main.h"
 
 #if defined(__MINGW32CE__) || defined(_WIN32_WCE)
+#include "protocol/message.h"
 #include "audio/wave_player.h"
 #include "protocol_const.h"
 
