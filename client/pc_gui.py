@@ -170,8 +170,9 @@ def main():
             cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
             if not cap.isOpened():
                 retry_count += 1
-                if retry_count % 10 == 0:
-                    print(f"[VIDEO] Waiting for stream at {url}...")
+                if retry_count % 15 == 0:
+                    print(f"[STATUS] Waiting for iPhone video stream... (Make sure iPhone is unlocked & cold-booted with box)")
+                cv2.imshow(WIN_NAME, placeholder)
                 key = cv2.waitKey(200) & 0xFF
                 if key == ord('q') or key == 27:
                     break
