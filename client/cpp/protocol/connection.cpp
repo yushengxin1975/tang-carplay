@@ -47,6 +47,7 @@ void Connection::sendInit(bool encrypted, int work_mode) {
         const uint32_t seed = static_cast<uint32_t>(std::rand());
         cipher_.init_seed(seed);
         send(Message::Encryption(seed));
+    }
     const int drivePosition = 0;  // left-hand drive
     const int nightMode = 2;      // auto
 
