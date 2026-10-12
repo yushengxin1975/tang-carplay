@@ -209,90 +209,136 @@ int main(int argc, char **argv) {
         }
     };
 
-    auto *t = new UsbTransport_PC();
-    t->claim_opts = co;
-    Connection *conn = nullptr;
-    try {
-        std::printf("opening box (0x1314:0x1520) & starting protocol...\n");
-        conn = new Connection(
-            std::unique_ptr<UsbTransport>(reinterpret_cast<UsbTransport *>(t)), cb);
-        conn->start();
-        std::printf("interface claimed & reader active.\n");
-        std::printf("sending config burst (sendInit, %s, mode=%d)...\n",
-                    encrypted ? "encrypted" : "plain", work_mode);
-        conn->sendInit(encrypted, work_mode);
-        std::printf("config burst sent.\n");
-    } catch (const std::exception &e) {
-        std::printf("FATAL: %s\n", e.what());
-        return 1;
-    }
-
-    std::printf("protocol up. plug iPhone into the box. Ctrl+C to stop.\n\n");
-
-    uint64_t last_v = 0, last_a = 0;
-    int stat_ticks = 0;
-    int hb_ticks = 0;
-
     while (g_run) {
-        if (!t->readPump(200)) {
-            std::printf("USB error, exiting\n");
-            break;
-        }
+        Connection *conn = nullptr;
+        UsbTransport_PC *t = nullptr;
+        bool logged_wait = false;
 
-        // Accept video viewer
-        if (g_video_listen != INVALID_SOCKET && g_video_client == INVALID_SOCKET) {
-            socket_t cl = accept(g_video_listen, nullptr, nullptr);
-            if (cl != INVALID_SOCKET) {
-                SET_NONBLOCK(cl);
-                g_video_client = cl;
-                g_send_sps_pps = true;
-                std::printf("[STREAM] video viewer connected\n");
-                conn->send(Message::Control(BTN_SCREEN_REFRESH));
+        // 1. Wait for Carlinkit box to be plugged in (retry every 1s)
+        while (g_run) {
+            t = new UsbTransport_PC();
+            t->claim_opts = co;
+            try {
+                conn = new Connection(
+                    std::unique_ptr<UsbTransport>(reinterpret_cast<UsbTransport *>(t)), cb);
+                conn->start();
+                std::printf("box found! interface claimed & reader active.\n");
+                std::printf("sending config burst (sendInit, %s, mode=%d)...\n",
+                            encrypted ? "encrypted" : "plain", work_mode);
+                conn->sendInit(encrypted, work_mode);
+                std::printf("config burst sent. protocol up. plug iPhone into the box.\n\n");
+                break;
+            } catch (const std::exception &e) {
+                delete conn;
+                conn = nullptr;
+                t = nullptr;
+                if (!logged_wait) {
+                    std::printf("waiting for Carlinkit box (0x1314:0x1520)... plug box into PC USB.\n");
+                    logged_wait = true;
+                }
+                // Keep handling viewer TCP connections while waiting for box
+                if (g_video_listen != INVALID_SOCKET && g_video_client == INVALID_SOCKET) {
+                    socket_t cl = accept(g_video_listen, nullptr, nullptr);
+                    if (cl != INVALID_SOCKET) {
+                        SET_NONBLOCK(cl);
+                        g_video_client = cl;
+                        g_send_sps_pps = true;
+                        std::printf("[STREAM] video viewer connected (waiting for box)\n");
+                    }
+                }
+                if (g_ctrl_listen != INVALID_SOCKET && g_ctrl_client == INVALID_SOCKET) {
+                    socket_t cl = accept(g_ctrl_listen, nullptr, nullptr);
+                    if (cl != INVALID_SOCKET) {
+                        SET_NONBLOCK(cl);
+                        g_ctrl_client = cl;
+                        std::printf("[CTRL] control client connected (waiting for box)\n");
+                    }
+                }
+#ifdef _WIN32
+                Sleep(1000);
+#else
+                sleep(1);
+#endif
             }
         }
 
-        // Accept control client and poll touch events
-        if (g_ctrl_listen != INVALID_SOCKET) {
-            if (g_ctrl_client == INVALID_SOCKET) {
-                socket_t cl = accept(g_ctrl_listen, nullptr, nullptr);
+        if (!g_run || !conn) break;
+
+        // If a video viewer connected while waiting for box, request keyframe
+        if (g_video_client != INVALID_SOCKET) {
+            conn->send(Message::Control(BTN_SCREEN_REFRESH));
+        }
+
+        // 2. Main read pump + periodic stats + heartbeat
+        uint64_t last_v = 0, last_a = 0;
+        int stat_ticks = 0;
+        int hb_ticks = 0;
+
+        while (g_run) {
+            if (!t->readPump(200)) {
+                std::printf("USB disconnected or error, resetting...\n");
+                break;
+            }
+
+            // Accept video viewer
+            if (g_video_listen != INVALID_SOCKET && g_video_client == INVALID_SOCKET) {
+                socket_t cl = accept(g_video_listen, nullptr, nullptr);
                 if (cl != INVALID_SOCKET) {
                     SET_NONBLOCK(cl);
-                    g_ctrl_client = cl;
-                    std::printf("[CTRL] control client connected\n");
+                    g_video_client = cl;
+                    g_send_sps_pps = true;
+                    std::printf("[STREAM] video viewer connected\n");
+                    conn->send(Message::Control(BTN_SCREEN_REFRESH));
                 }
-            } else {
-                uint8_t cbuf[16];
-                int r = recv(g_ctrl_client, reinterpret_cast<char *>(cbuf), sizeof(cbuf), 0);
-                if (r >= 12) {
-                    uint32_t act = Message::read_u32_le(cbuf);
-                    uint32_t tx  = Message::read_u32_le(cbuf + 4);
-                    uint32_t ty  = Message::read_u32_le(cbuf + 8);
-                    conn->send(Message::Touch(act, tx, ty));
-                    std::printf("[TOUCH] act=%u x=%u y=%u\n", act, tx, ty);
-                } else if (r == 0) {
-                    CLOSE_SOCK(g_ctrl_client);
-                    g_ctrl_client = INVALID_SOCKET;
-                    std::printf("[CTRL] control client disconnected\n");
+            }
+
+            // Accept control client and poll touch events
+            if (g_ctrl_listen != INVALID_SOCKET) {
+                if (g_ctrl_client == INVALID_SOCKET) {
+                    socket_t cl = accept(g_ctrl_listen, nullptr, nullptr);
+                    if (cl != INVALID_SOCKET) {
+                        SET_NONBLOCK(cl);
+                        g_ctrl_client = cl;
+                        std::printf("[CTRL] control client connected\n");
+                    }
+                } else {
+                    uint8_t cbuf[16];
+                    int r = recv(g_ctrl_client, reinterpret_cast<char *>(cbuf), sizeof(cbuf), 0);
+                    if (r >= 12) {
+                        uint32_t act = Message::read_u32_le(cbuf);
+                        uint32_t tx  = Message::read_u32_le(cbuf + 4);
+                        uint32_t ty  = Message::read_u32_le(cbuf + 8);
+                        conn->send(Message::Touch(act, tx, ty));
+                        std::printf("[TOUCH] act=%u x=%u y=%u\n", act, tx, ty);
+                    } else if (r == 0) {
+                        CLOSE_SOCK(g_ctrl_client);
+                        g_ctrl_client = INVALID_SOCKET;
+                        std::printf("[CTRL] control client disconnected\n");
+                    }
                 }
+            }
+
+            // Heartbeat every ~3s
+            if (++hb_ticks >= 15) {
+                hb_ticks = 0;
+                conn->send(Cmd::HEARTBEAT);
+            }
+
+            if (++stat_ticks >= 25) {  // ~5s
+                stat_ticks = 0;
+                uint64_t vb = g_video_bytes, ab = g_audio_bytes;
+                std::printf("[STAT] video %u fr %llu KB (+%llu) | audio %u fr %llu KB (+%llu)\n",
+                            g_video_frames.load(), (unsigned long long)(vb / 1024),
+                            (unsigned long long)((vb - last_v) / 1024),
+                            g_audio_frames.load(), (unsigned long long)(ab / 1024),
+                            (unsigned long long)((ab - last_a) / 1024));
+                last_v = vb; last_a = ab;
             }
         }
 
-        // Heartbeat every ~3s
-        if (++hb_ticks >= 15) {
-            hb_ticks = 0;
-            conn->send(Cmd::HEARTBEAT);
-        }
-
-        if (++stat_ticks >= 25) {  // ~5s
-            stat_ticks = 0;
-            uint64_t vb = g_video_bytes, ab = g_audio_bytes;
-            std::printf("[STAT] video %u fr %llu KB (+%llu) | audio %u fr %llu KB (+%llu)\n",
-                        g_video_frames.load(), (unsigned long long)(vb / 1024),
-                        (unsigned long long)((vb - last_v) / 1024),
-                        g_audio_frames.load(), (unsigned long long)(ab / 1024),
-                        (unsigned long long)((ab - last_a) / 1024));
-            last_v = vb; last_a = ab;
-        }
+        conn->stop();
+        delete conn;
+        conn = nullptr;
     }
 
     std::printf("\n=== summary ===\n");
