@@ -695,7 +695,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
 
     InitializeCriticalSection(&g_cs);
     InitializeCriticalSection(&g_vid_cs);
-    g_hVidEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    g_hVidEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
     g_hwnd = CreateWindowW(WC_CARLINKIT, L"Carlinkit",
                            WS_POPUP | WS_VISIBLE,
