@@ -402,6 +402,13 @@ void UsbTransport_PC::submitRead(std::size_t, RecvCallback cb) {
                             fprintf(stderr, "[USB-READ] callback unknown exception\n");
                         }
                     }
+                } else if (rc == -9) {
+                    fprintf(stderr, "[USB-READ] pipe stalled (rc=-9), clearing halt on 0x81\n");
+                    if (impl_->clear_halt && impl_->devh) {
+                        impl_->clear_halt(impl_->devh, 0x81);
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    continue;
                 } else if (rc != 0 && rc != -7 && rc != -8) {
                     fprintf(stderr, "[USB-READ] fatal err rc=%d\n", rc);
                     break;
@@ -458,6 +465,13 @@ bool UsbTransport_PC::readPump(int timeout_ms) {
     if (rc == 0 && rx > 0) {
         fprintf(stderr, "[USB-READ] rx=%d\n", rx);
         if (impl_->recv) impl_->recv(buf, static_cast<std::size_t>(rx));
+        return true;
+    }
+    if (rc == -9) {
+        fprintf(stderr, "[USB-READ] pipe stalled (rc=-9), clearing halt on 0x81\n");
+        if (impl_->clear_halt && impl_->devh) {
+            impl_->clear_halt(impl_->devh, 0x81);
+        }
         return true;
     }
     if (rc != 0 && rc != -7 && rc != -8) {
