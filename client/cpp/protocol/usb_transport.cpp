@@ -154,7 +154,18 @@ void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
         impl_->host_close = reinterpret_cast<decltype(impl_->host_close)>(GetProcAddressW(bMod, L"host_close"));
         if (impl_->host_init && impl_->host_send && impl_->host_recv && impl_->host_close) {
             PushEventW(L"加载官方 libBoxUSB.dll 驱动...");
-            int hrc = impl_->host_init();
+            // Retry host_init: the USB device (0x1314:0x1520) may not be
+            // fully enumerated right after EnsureDriverInstalled activates
+            // the driver. A single call races the enumeration and returns -1.
+            // Retry up to 6 times with 500ms spacing (~3s total window).
+            int hrc = -1;
+            for (int attempt = 0; attempt < 6; ++attempt) {
+                hrc = impl_->host_init();
+                if (hrc == 0) break;
+                PushEventW(L"libBoxUSB init 尝试 %d/6 返回 %d%s",
+                           attempt + 1, hrc, attempt < 5 ? L"，等待重试..." : L"");
+                if (attempt < 5) Sleep(500);
+            }
             if (hrc == 0) {
                 impl_->box_lib = bMod;
                 impl_->use_box_lib = true;
@@ -162,7 +173,7 @@ void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
                 PushEventW(L"OK: libBoxUSB 握手成功 (0x1314:0x1520)");
                 return;
             } else {
-                PushEventW(L"libBoxUSB init 返回 %d，启用原生驱动", hrc);
+                PushEventW(L"libBoxUSB init 6次重试均失败 (最后 %d)，启用原生驱动", hrc);
                 FreeLibrary(bMod);
                 bMod = nullptr;
             }
@@ -320,8 +331,18 @@ void UsbTransport_CE::submitRead(std::size_t buf_size, RecvCallback cb) {
                                            static_cast<DWORD>(buf.size()),
                                            &rx, nullptr);
                     if (ok && rx > 0 && im->recv) {
+                        ++ok_reads;
+                        if (ok_reads <= 5) {
+                            PushEventW(L"读[UKW] #%u: %u 字节", (unsigned)ok_reads, (unsigned)rx);
+                        }
+                        empty_reads = 0;
                         im->recv(buf.data(), rx);
                     } else {
+                        ++empty_reads;
+                        if (empty_reads == 100 || (empty_reads > 100 && (empty_reads % 500) == 0)) {
+                            PushEventW(L"读[UKW] 空读 x%u (累计成功 %u 次) ok=%d e=%u",
+                                       (unsigned)empty_reads, (unsigned)ok_reads, (int)ok, GetLastError());
+                        }
                         Sleep(20);
                     }
                 } else {
