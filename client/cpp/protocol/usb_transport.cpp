@@ -355,7 +355,7 @@ void UsbTransport_CE::submitRead(std::size_t buf_size, RecvCallback cb) {
 
 void UsbTransport_CE::write(const uint8_t *data, std::size_t len) {
     if (impl_->use_box_lib && impl_->host_send) {
-        int tx = impl_->host_send(const_cast<uint8_t *>(data), static_cast<int>(len), 1000);
+        int tx = impl_->host_send(const_cast<uint8_t *>(data), static_cast<int>(len), 3000);
         if (tx <= 0) {
             PushEventW(L"写[libBoxUSB]失败: len=%u tx=%d", (unsigned)len, tx);
             if (error_cb_) error_cb_(tx);  // let the app self-heal (reconnect)
