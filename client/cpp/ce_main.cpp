@@ -149,7 +149,7 @@ static void InitLogging() {
                 DWORD written = 0;
                 WriteFile(g_hLogFile, hdr, strlen(hdr), &written, nullptr);
                 FlushFileBuffers(g_hLogFile);
-                PushEventW(L"日志文件: %s", exePath);
+                LogDebugW(L"[LOG] carplay.log at: %s", exePath);
             }
         }
     }
