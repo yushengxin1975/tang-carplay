@@ -3,6 +3,7 @@
 
 #include <cstring>
 #include <ctime>
+#include <cstdio>
 #include <string>
 
 namespace carlinkit {
@@ -35,13 +36,13 @@ void Connection::start() {
 }
 
 void Connection::sendInit(bool encrypted, int work_mode) {
-    // Mirrors FastCarPlay Connection::sendInit() with default settings
-    // (left-hand-drive, night auto, weak charge, wifi5, bt audio off,
-    // autoconnect on, micType 1, dpi 120, work_mode 2=CarPlay, 1=AndroidAuto).
-    //
-    // Encrypted mode (FastCarPlay): seed = rand() after srand(time);
-    // CMD_ENCRYPTION(seed) is sent FIRST and unencrypted; the box replies
-    // with CMD_ENCRYPTION (len 0), at which point cipher_enabled_ becomes true.
+    // Full FastCarPlay-aligned session init. The box needs the complete
+    // sequence — especially JSON_CONTROL (syncTime/HiCarConnectMode/
+    // GNSSCapability/androidAutoSize…) and DAYNIGHT — to negotiate CarPlay
+    // with the iPhone. Without them the box starts a partial session that
+    // immediately tears down (audio pop → return to car UI, phone never
+    // shows the CarPlay icon).
+    (void)work_mode;  // FastCarPlay hardcodes 1; keep param for API compat.
     if (encrypted) {
         std::srand(static_cast<unsigned>(std::time(nullptr)));
         const uint32_t seed = static_cast<uint32_t>(std::rand());
@@ -50,25 +51,40 @@ void Connection::sendInit(bool encrypted, int work_mode) {
     }
     const int drivePosition = 0;  // left-hand drive
     const int nightMode = 2;      // auto
-
     const int width = 1024;
     const int height = 600;
     const int fps = 30;
+    const int syncTime = static_cast<int>(std::time(nullptr));
+    const int mediaDelay = 0;
 
-    // 1. Core AutoKit 0x235ec sequence:
-    send(Message::Init(width, height, fps));
-    send(Message::Control(13));   // AutoKit standard session control 13
-    send(Message(Cmd::CMD_9, 1, /*encrypt=*/false)); // AutoKit phone discovery command (Cmd 9, val 1)
-    send(Message::File("/tmp/charge_mode", 2));  // normal/strong charge (FastCarPlay/AutoKit default)
-    send(Message::File("/etc/android_work_mode", work_mode));
-
-    // 2. Additional config:
+    // FastCarPlay order: dpi + work_mode BEFORE Init.
     send(Message::File("/tmp/screen_dpi", 120));
+    send(Message::File("/etc/android_work_mode", 1));  // 1 = CarPlay (FastCarPlay)
+    send(Message::Init(width, height, fps));
+
+    // JSON_CONTROL: critical session config.
+    char json[256];
+    std::snprintf(json, sizeof(json),
+        "{\"syncTime\":%d,\"mediaDelay\":%d,\"drivePosition\":%d,"
+        "\"androidAutoSizeW\":%d,\"androidAutoSizeH\":%d,\"HiCarConnectMode\":0,"
+        "\"GNSSCapability\":7,\"DashboardInfo\":1,\"UseBTPhone\":0}",
+        syncTime, mediaDelay, drivePosition, width, height);
+    send(Message::String(Cmd::JSON_CONTROL, json));
+
+    // Day/night mode JSON.
+    char dn[64];
+    std::snprintf(dn, sizeof(dn), "{\"DayNightMode\":%d}", nightMode);
+    send(Message::String(Cmd::DAYNIGHT, dn));
+
     send(Message::File("/tmp/night_mode", nightMode));
+    send(Message::File("/tmp/charge_mode", 2));  // normal/strong charge
     send(Message::File("/etc/box_name", "CarPlay"));
     send(Message::File("/tmp/hand_drive_mode", drivePosition));
-    send(Message::Control(7));    // microphone
-    send(Message::Control(1002)); // autoconnect
+
+    send(Message::Control(7));     // microphone (micType 1)
+    send(Message::Control(24));    // wifi channel (wifi5=false → 24)
+    send(Message::Control(23));    // bluetooth audio off (→ 23)
+    send(Message::Control(1002));  // autoconnect
 }
 
 void Connection::stop() {
