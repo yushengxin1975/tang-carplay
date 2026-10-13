@@ -354,8 +354,23 @@ void UsbTransport_CE::submitRead(std::size_t buf_size, RecvCallback cb) {
 }
 
 void UsbTransport_CE::write(const uint8_t *data, std::size_t len) {
+    static int s_write_count = 0;
     if (impl_->use_box_lib && impl_->host_send) {
         int tx = impl_->host_send(const_cast<uint8_t *>(data), static_cast<int>(len), 3000);
+        // Log first 40 writes (covers sendInit + initial heartbeats) to
+        // carplay.log on TF card — shows exactly which message fails.
+        if (s_write_count < 40) {
+            ++s_write_count;
+            uint32_t magic = 0, cmd = 0;
+            if (len >= 8) {
+                magic = static_cast<uint32_t>(data[0]) | (data[1] << 8) |
+                        (data[2] << 16) | (data[3] << 24);
+                cmd   = static_cast<uint32_t>(data[4]) | (data[5] << 8) |
+                        (data[6] << 16) | (data[7] << 24);
+            }
+            PushEventW(L"写#%d len=%u tx=%d magic=%08X cmd=%u",
+                       s_write_count, (unsigned)len, tx, magic, cmd);
+        }
         if (tx <= 0) {
             PushEventW(L"写[libBoxUSB]失败: len=%u tx=%d", (unsigned)len, tx);
             if (error_cb_) error_cb_(tx);  // let the app self-heal (reconnect)
