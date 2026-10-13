@@ -1,6 +1,6 @@
 # 项目交接文档 — BYD 唐 2015 Carlinkit 客户端开发
 
-> 生成时间：2026-10-11 | 最后 commit：`bc479b4`（静态链接 pc_main）
+> 生成时间：2026-10-11 | 最后更新：2026-10-13 | 最后 commit：`b0986ac`（SEH 防御网 + 音量同步）
 > 仓库：https://github.com/yushengxin1975/tang-carplay（私有）
 
 ## 一、项目目标
@@ -17,10 +17,11 @@
 | PC 单元测试 | ✅ **36/36 全过** | 含 NIST FIPS-197 AES + NIST SP800-38A CFB128 KAT，双平台 CI |
 | PC USB transport | ✅ 编译通过 | libusb-1.0 **动态加载**（零链接依赖），OUT 端点 0x02 已修正，alt-setting+clear-halt 默认开 |
 | pc_main 控制台工具 | ✅ **真机运行** | `--enc`（默认）/`--plain` 双模式，静态链接自包含 exe，plain 模式写入 0 错误 |
-| CE 客户端可执行 | ✅ **编译链接成功** | `carlinkit_ce.exe` ARM 80KB，CI 产出 |
+| CE 客户端可执行 | ✅ **编译链接成功** | `carlinkit_ce.exe` ARM 128KB，CI 产出（含 FFmpeg 解码 + SEH 防御网 + 音量同步） |
 | **pc_main 真机测试** | ✅ **重大突破！M1.5b 达成** | 成功识别 iPhone 15（CMD_PLUGGED），拉起 CarPlay 会话，以 30fps 持续接收 2000+ 帧 H.264 视频流（12+ MB），SPS/PPS/IDR 帧完整落盘！ |
-| CE 上车集成 | ❌ 未开始 | M2 里程碑 |
-| 媒体层（视频/音频解码） | ⏳ **进行中** | 视频流已捕获，接下来进行 H.264 解码与界面渲染 |
+| CE 上车集成 | ✅ **上车验证** | 车机实跑：握手 100% 成功、音频从车机喇叭正常播出、CarPlay 会话 ONLINE |
+| 媒体层（视频/音频解码） | ⏳ **进行中** | 音频链路 ✅；视频解码已修复闪退（sws_scale 负跨距 + SEH 防御网），待上车复测 |
+| 音量控制 | ⏳ **已实现待验证** | 屏幕按钮 + WM_APPCOMMAND/VK 映射 + PCM 数字增益 + 向盒子回传 CMD_CONTROL 300/301 |
 
 ## 三、硬件事实（已验证，勿重查）
 
@@ -112,6 +113,26 @@
 1. **Power cycle 盒子**：将 Carlinkit 盒子从电脑 USB 拔出，等待 5 秒重新插回（清除上次单次写入导致的 FIFO 阻塞；iPhone 保持连接并解锁）。
 2. **运行最终客户端**：`& "C:\tang-carplay\dist_final\build\pc_main.exe"` 一次性送达两阶段配置突发并保持会话。
 
+### 4.8 🏆 闪退根因与修复：sws_scale 负跨距 + SEH 防御网 + 音量同步（2026-10-13）
+
+**上车实测现象**（用户照片关键证据）：
+- 握手 100% 成功：连接卡片绿色 `● CarPlay 会话已保持 (ONLINE)`，手机视频声音从车机喇叭正常播出
+- 日志 `STATE: -1`：盒子发送了协议未定义的扩展状态码，程序标记为 UNKNOWN——**仅是日志文本，不断连、不是闪退原因**
+- **闪退真因**：上一版为验证音频屏蔽了视频解码线程（视频只计数丢弃）所以稳定；本版开启 VideoDecodeThread 后，iPhone 声音出来的瞬间盒子以 30~60fps 喷射 H.264 流，`h264_decoder_ce.h` 为适配 WinCE 屏幕倒置向 `sws_scale` 传入**负跨距（-stride）**，WinCE ARM 汇编优化版 `swscale-3.dll` 的颜色转换指令不支持负跨距指针寻址 → **硬件级 Access Violation** → WinCE 内核立即无声终止整个进程 → 画面瞬间退回原车界面
+
+**三项修复（commit `3efb4aa` + `b0986ac`）**：
+1. **sws_scale 负跨距崩溃修复**（`3efb4aa`）：去掉负跨距，标准正向缓冲解码，解码后在内存中做安全行翻转（300 行 × 512 uint32 原地交换，ARM11 上 ~1ms，100% 内存安全）
+2. **WinCE SEH 硬件异常防御网**（`b0986ac`）：CeGCC 无 MSVC `__try/__except`，改用 `SetUnhandledExceptionFilter`（coredll 动态加载）+ `setjmp/longjmp` SJLJ 式 SEH 模拟：
+   - 启动时安装进程级过滤器 `VidSehFilter`
+   - 每次解码调用前 arm（记录线程 ID），异常时过滤器 longjmp 回解码线程安全点，**只丢当前帧，进程存活**
+   - 线程 ID 守卫：其他线程的异常绝不会 longjmp 到外来栈上下文
+3. **触控 ↔ CarPlay 硬件音量联动**（`3efb4aa` 热区 + `b0986ac` 回传）：
+   - 按钮热区加宽（诊断模式 580..720 / 750..880，CarPlay 浮条 600..710 / 750..860）
+   - `AdjustVolume` 现在向盒子回传 `CMD_CONTROL`（300=音量减 / 301=音量加，FastCarPlay `BTN_300/301`），iPhone 侧音量跟随车机调节
+   - 本地 PCM 数字增益 + `WM_APPCOMMAND`（0x0319）+ VK_VOLUME 映射保留
+
+**验证状态**：CI 全绿（CeGCC ARM 128KB 编译成功，36 单元测试双平台通过）。**待上车复测**：视频画面显示 + 坏帧不闪退 + 音量按钮生效。
+
 ## 五、代码结构
 
 ```
@@ -201,46 +222,26 @@ g++ -std=c++17 -O2 -Wall -Iclient/include -Iclient/cpp \
 
 ## 七、下一步工作（按优先级排序）
 
-### M1.5a — 解决盒子不回数据（当前阻塞，最高优先级）
+### ✅ 已完成里程碑
+- **M1.5a（盒子不回数据）**：已解决 — 移除 `set_configuration(1)` + 两阶段独立传输 + 冷启动上电顺序（§4.6/§4.7）
+- **M1.5b（真机协议验证）**：已达成 — PLUGGED + CarPlay 会话 + 2000+ 帧 H.264 落盘（SPS/PPS/IDR 完整）
+- **M2（CE 上车集成）**：已验证 — 车机实跑握手 100%、音频从车机喇叭播出、会话 ONLINE
+- **M3（媒体层）**：音频 ✅；视频解码闪退已修复（§4.8），**待上车复测**
+- **M4 部分（音量控制）**：已实现（屏幕按钮 + PCM 数字增益 + 盒子回传 CMD_CONTROL 300/301），**待验证**
 
-**问题**：plain 模式写入已成功（0 错误），但盒子 IN 端点无任何数据。加密模式还没在 power cycle 后作为第一次运行测试（详见 §4.6）。
+### 🎯 当前最高优先级 — 上车复测新版（commit `b0986ac`）
+1. **部署**：TF 卡 `gps_byd/` 下放最新 `carlinkit_ce.exe`（ARM 128KB，CI 产出，改名 `startup.exe`）+ `ceusbkwrapper.dll` + `USBKIT.DLL`
+2. **冷启动顺序**：先插 iPhone → 再上盒子电 → 按导航键启动
+3. **验证点**：
+   - 视频画面正常显示（sws_scale 正向跨距 + 内存行翻转，不再闪退）
+   - 坏帧场景下程序不闪退（日志出现 `SEH: caught` 即防御网生效，只丢帧进程存活）
+   - 点击 [ 音量 - ] / [ 音量 + ]：本地 PCM 增益变化 + iPhone 侧音量跟随（盒子回传 CMD_CONTROL 300/301）
+   - `STATE: -1` 日志仍会出现但无害（§4.8 已解释）
 
-**推荐路径**（按成本排序）：
-1. **Power cycle + 加密模式首跑**（最快）：拔盒子 USB → 等 10s → 插回 → 立刻跑 `pc_main.exe`（加密默认，不加 --plain）。如果写入成功且收到数据 → Phase B.1 完成。
-2. **抓包对比**：在 Windows 装 [USBPcap](https://usbpcap.codeplex.com/)，抓 AutoKit 连盒子的前 20 个 USB 事务。AutoKit 能连成功，看它发了什么我们没发的。
-3. **Linux 对照**：树莓派上跑 FastCarPlay 原版连同一盒子，`sudo modprobe usbmon` + `wireshark` 抓包。
-
-### M1.5b — pc_main 真机协议验证（解决超时后）
-```bash
-./pc_main              # 默认加密
-# 预期输出：
-#   opening box (0x1314:0x1520)...
-#   claimed. starting protocol...
-#   protocol up. plug iPhone into the box.
-# 插 iPhone 到盒子 → 观察 PLUGGED / VIDEO / AUDIO 消息
-# sample_video.bin / sample_audio.bin 会落盘前 2MB 供 ffmpeg 离线分析
-```
-**可能遇到的问题**：
-- Linux 权限：`sudo ./pc_main` 或写 udev 规则
-- Windows 需要 libusb-1.0.dll（libusb.info 下载 MinGW 64-bit 版）
-- 如果收到数据但 typecheck 不匹配：放宽 Message::parse 的 typecheck 检查
-- 如果加密握手失败：对比 FastCarPlay `aes_cipher.cpp` 的 seed 派生，确认 base key 和 IV 字节序
-
-### M2 — CE 上车集成
-1. 部署包：TF 卡 `gps_byd/` 下放 `carlinkit_ce.exe`（改名 startup.exe）+ `ceusbkwrapper.dll` + `USBKIT.DLL`
-2. 前提：usbtest v0.6 先跑一次（注册 UKW 驱动）
-3. 验证：按导航键 → carlinkit_ce 窗口 → 盒子+iPhone → 观察 VIDEO/AUDIO 计数
-
-### M3 — 媒体层
-- 视频：`OMX_CORE.DLL` + `VDEC_DCH60.dll`（AutoKit 包内有，直接复用）
-- 音频：`libfdk-aac-0.dll`（同上）+ waveOut
-- 渲染：DirectDraw（`ddraw.dll` 在 `\Windows` 已确认存在）
-- 触控：TouchPanel API → CMD_TOUCH/CMD_MULTI_TOUCH
-
-### M4 — 打磨
-- 音量控制（修 AutoKit 缺陷 #1）
+### 后续打磨
 - 分辨率提升（协议层请求更高分辨率）
-- 连接稳定性（修插拔两次问题）
+- 连接稳定性（插拔两次问题）
+- 原车方向盘按键音量（需 CAN 总线/MCU 研究，当前以屏幕按钮替代）
 
 ## 八、风险与法律
 
@@ -301,3 +302,51 @@ gh run download <id> --name pc-windows-latest-<id> --dir dist  # 下载 PC 产�
   - 盒子秒级上报 `[MSG PLUGGED]`（4 字节 `03 00 00 00`，状态 `ONLINE`）；
   - iPhone 15 顺利拉起 CarPlay 会话；
   - 持续稳定拉取 2000+ 帧 H.264 视频流（~30fps，12+ MB），`sample_video.bin` 成功落盘并验证包含标准 SPS（`0x27`）、PPS（`0x28`）、IDR 关键帧（`0x25`）！
+
+## 十二、ANTIGRAVITY 会话提交记录（2026-10-12 ~ 10-13）
+
+| commit | 说明 |
+|---|---|
+| `ee12597` | HANDOVER：写超时解决、静态链接、下一步 |
+| `34722c5` | 后台 IN 读线程 + 对齐 FastCarPlay 握手 + 宽松 typecheck |
+| `68ff45d` | 2018 盒子默认 plain 协议 + 连续 USB 写 + 异常安全 |
+| `849afe8` | HANDOVER：2018 固件 plain 握手协议分析 |
+| `1b8658e` | **禁用 set_configuration(1)**（盒子 gadget OUT NAK 根因） |
+| `b728535` | HANDOVER：set_configuration 根因解决定稿 |
+| `91a5807` | **两阶段独立传输**（header/payload 分开发送，对齐 AutoKit） |
+| `f877bb4` | HANDOVER：两阶段传输发现记录 |
+| `6f27d58` | onRecv 跨读流重组缓冲 |
+| `d929514` | android_work_mode=2（iPhone CarPlay） |
+| `c0af1bf` | charge_mode=2（对齐 AutoKit 默认） |
+| `f5cc50b` | rc=-9 PIPE STALL clear_halt 自愈 + Control(13) 初始化 |
+| `0ae9094` | CMD_9 手机发现命令 + rc=-1 瞬态处理 |
+| `4064a9a` | sendInit/Message::Init 对齐 AutoKit 0x235ec/0x66ba4 |
+| `999353d` | HANDOVER：M1.5b 突破记录（实时 H.264 流） |
+| `27bdcfb` | pc_gui 实时视频流 + 触控通道 + GUI 查看器 |
+| `7e22a57` | pc_gui 绝对脚本路径解析 pc_main.exe |
+| `a6d8096` | pc_main 弹性自动重连 + 非阻塞等待循环 |
+| `924ddaa` | 移除越界 conn->stop() 与未用变量 |
+| `70f66ea` | 恢复 sendInit 缺失右括号 |
+| `46f8e27` | pc_gui 占位符与流等待日志澄清 |
+| `8e50c3d` | pc_main/pc_gui 实时 waveOut PCM 音频推流 |
+| `9b5a90b` | WavePlayer 无头 CI 哑 sink（audio devs==0） |
+| `1123986` | 视频/触控线程解耦消除 UI 冻结 + 12 字节触控帧 + 非阻塞 socket |
+| `5167e27` | **CE 移植**：WavePlayer 音频 + 热插拔 sendInit + 触控，OUT 端点 0x02 |
+| `5e71d44` | ce_main 包含 protocol/message.h（Message::Touch 声明） |
+| `6439fb0` | Message::Touch 命名空间 + build_ce.sh 导出 CEGCC_BIN |
+| `09e03ec` | UsbTransport_CE 自愈驱动部署 + 注册表回退 |
+| `71eb558` | 纯 Unicode WCHAR 解决乱码 + 深色驾驶舱 UI + Usb_Box CBX0 驱动激活 |
+| `ba0e8dd` | RelDevList 匹配设备保留 + bulk 传输标志配置 |
+| `44cfe81` | **官方 libBoxUSB 驱动后端** + ceusbkwrapper 回退 + 16KB 安全缓冲 |
+| `ad8af9c` | **FFmpeg H.264 视频解码 + 数字音量控制集成** |
+| `403c40c` | wave_player.h cleanup_done_buffers 缺失右括号 |
+| `61925a5` | CreateEventW（WinCE Unicode 兼容） |
+| `8909725` | 手机插入崩溃修复：静态缓冲 + ARM 对齐 + NAL 填充 + 持久 carplay.log |
+| `679e4a9` | 原生 WinCE CreateFileW 日志 + GCC aligned 属性 |
+| `0d07803` | 音量按钮 emoji → 原生中文文字（消除方块乱码） |
+| `6512f4a` | Mode B borderPen HPEN oldP 声明 |
+| `3efb4aa` | **sws_scale 负跨距闪退修复**（安全原地行翻转）+ WM_APPCOMMAND 音量 + 按钮热区加宽 |
+| `b0986ac` | **SEH 防御网**（视频解码线程 setjmp/longjmp + SetUnhandledExceptionFilter）+ 音量键回传盒子（CMD_CONTROL 300/301） |
+
+**CI 状态**：全绿 — `carlinkit_ce.exe` ARM 128KB（CeGCC）+ `pc_main.exe` 静态链接，36 单元测试双平台通过。
+**产物**：`dist_seh/carlinkit_ce.exe`（最新，含 SEH + 音量同步），待部署 TF 卡上车复测。
