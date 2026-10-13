@@ -151,6 +151,8 @@ static void AdjustVolume(int delta) {
     if (v > 150) v = 150;
     g_current_volume = v;
     g_ce_wave_player.set_volume(v);
+    PushEventW(L"音量调至 %d%%", v);
+    LogDebugW(L"[VOL] Volume adjusted to %d%%", v);
     if (g_hwnd) InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
@@ -184,6 +186,21 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         break;
     }
 
+    case 0x0319: /* WM_APPCOMMAND */ {
+        int cmd = ((int)(short)HIWORD(lp)) & ~0xF000;
+        if (cmd == 9 /* APPCOMMAND_VOLUME_DOWN */) {
+            AdjustVolume(-10);
+            return TRUE;
+        } else if (cmd == 10 /* APPCOMMAND_VOLUME_UP */) {
+            AdjustVolume(+10);
+            return TRUE;
+        } else if (cmd == 8 /* APPCOMMAND_VOLUME_MUTE */) {
+            AdjustVolume(g_current_volume > 0 ? -g_current_volume : 100);
+            return TRUE;
+        }
+        break;
+    }
+
     case WM_LBUTTONDOWN: {
         int px = LOWORD(lp), py = HIWORD(lp);
         BOOL isCarplay = g_has_carplay_frame;
@@ -196,38 +213,38 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 
         // 1. Diagnostic Mode Button Interceptions
         if (!isCarplay) {
-            // [ 退出 EXIT ] button (x: 875..1010, y: 45..98)
-            if (px >= 875 && px <= 1010 && py >= 45 && py <= 98) {
+            // [ 退出 EXIT ] button (x: 870..1015, y: 40..100)
+            if (px >= 870 && px <= 1015 && py >= 40 && py <= 100) {
                 LogDebugW(L"[EXIT] Diagnostic screen EXIT button clicked");
                 PostQuitMessage(0);
                 return 0;
             }
-            // Volume [ 音量 - ] (x: 595..710, y: 45..98)
-            if (px >= 595 && px <= 710 && py >= 45 && py <= 98) {
+            // Volume [ 音量 - ] (x: 580..720, y: 40..100)
+            if (px >= 580 && px <= 720 && py >= 40 && py <= 100) {
                 AdjustVolume(-10);
                 return 0;
             }
-            // Volume [ 音量 + ] (x: 760..875, y: 45..98)
-            if (px >= 760 && px <= 875 && py >= 45 && py <= 98) {
+            // Volume [ 音量 + ] (x: 750..880, y: 40..100)
+            if (px >= 750 && px <= 880 && py >= 40 && py <= 100) {
                 AdjustVolume(+10);
                 return 0;
             }
         } else {
-            // 2. CarPlay Overlay Button Interceptions (top floating bar y <= 44)
-            if (py <= 44) {
-                // Exit button (x: 865..1010)
-                if (px >= 865 && px <= 1010) {
+            // 2. CarPlay Overlay Button Interceptions (top floating bar y <= 46)
+            if (py <= 46) {
+                // Exit button (x: 865..1015)
+                if (px >= 865 && px <= 1015) {
                     LogDebugW(L"[EXIT] CarPlay overlay EXIT button clicked");
                     PostQuitMessage(0);
                     return 0;
                 }
-                // Volume [-] (x: 610..705)
-                if (px >= 610 && px <= 705) {
+                // Volume [-] (x: 600..710)
+                if (px >= 600 && px <= 710) {
                     AdjustVolume(-10);
                     return 0;
                 }
-                // Volume [+] (x: 760..855)
-                if (px >= 760 && px <= 855) {
+                // Volume [+] (x: 750..860)
+                if (px >= 750 && px <= 860) {
                     AdjustVolume(+10);
                     return 0;
                 }
@@ -624,6 +641,7 @@ static DWORD WINAPI VideoDecodeThread(LPVOID) {
                 if (ok) {
                     if (!g_has_carplay_frame) {
                         LogDebugW(L"[VID] First CarPlay frame decoded successfully (%dx%d)!", fw, fh);
+                        PushEventW(L"OK: 首帧画面已就绪 (%dx%d)！", fw, fh);
                     }
                     g_has_carplay_frame = TRUE;
                     InterlockedIncrement(reinterpret_cast<volatile LONG *>(&g_decoded_frames));
@@ -653,7 +671,11 @@ static DWORD WINAPI ClientThread(LPVOID) {
 
     InboundCallbacks cb;
     cb.on_state = [](ConnState s) {
-        PushEventW(L"STATE: %d", static_cast<int>(s));
+        if (s == ConnState::UNKNOWN) {
+            PushEventW(L"STATE: %d (SYNC)", static_cast<int>(s));
+        } else {
+            PushEventW(L"STATE: %d", static_cast<int>(s));
+        }
         if (s == ConnState::NO_DEVICE) {
             g_conn_state = 1;
             SetLineW(1, L"[就绪] 等待插入 iPhone (USB 盒子已就绪)");
