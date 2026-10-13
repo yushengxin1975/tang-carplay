@@ -51,7 +51,7 @@ static volatile DWORD g_decoded_frames = 0;
 static volatile DWORD g_audio_frames = 0;
 static volatile DWORD g_touch_count = 0;
 static volatile int   g_conn_state = 0; // 0=init, 1=ready, 2=online, 3=error
-static volatile int   g_current_volume = 100; // 0..150%
+static volatile int   g_current_volume = 50;  // 0..150% (initial 50% to avoid pop)
 static volatile LONG  g_write_failures = 0;   // consecutive transport write failures (self-heal trigger)
 
 static carlinkit::WavePlayer g_ce_wave_player;

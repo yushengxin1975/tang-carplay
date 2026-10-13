@@ -394,7 +394,7 @@ private:
     uint32_t sample_rate_ = 0;
     uint16_t channels_ = 0;
     uint16_t bits_per_sample_ = 16;
-    int volume_percent_ = 100;
+    int volume_percent_ = 50;  // initial 50% to avoid startup pop
     bool is_dummy_ = false;
 
 #if defined(__MINGW32CE__) || defined(_WIN32_WCE)
