@@ -209,21 +209,31 @@ void Connection::dispatch(const Message &msg) {
     auto n = msg.payload_size();
     if (cbs_.on_any) cbs_.on_any(msg.type(), p, n);
     switch (msg.type()) {
-    case Cmd::PLUGGED:
-        if (cbs_.on_plugged) cbs_.on_plugged();
+    case Cmd::PLUGGED: {
+        bool need_reinit;
         {
             LockGuard lock(mtx_);
             state_ = ConnState::ONLINE;
+            need_reinit = was_unplugged_;
+            was_unplugged_ = false;
         }
+        if (cbs_.on_plugged) cbs_.on_plugged();
         if (cbs_.on_state) cbs_.on_state(ConnState::ONLINE);
+        // Re-send init after a re-plug: the box's USB gadget resets
+        // when switching to CarPlay mode, losing its configuration.
+        if (need_reinit) {
+            try { sendInit(); } catch (...) {}
+        }
         break;
+    }
     case Cmd::UNPLUGGED:
         if (cbs_.on_unplugged) cbs_.on_unplugged();
         {
             LockGuard lock(mtx_);
-            state_ = ConnState::ONLINE;
+            state_ = ConnState::NO_DEVICE;
+            was_unplugged_ = true;
         }
-        if (cbs_.on_state) cbs_.on_state(ConnState::ONLINE);
+        if (cbs_.on_state) cbs_.on_state(ConnState::NO_DEVICE);
         break;
     case Cmd::STATE:
         if (cbs_.on_state) {

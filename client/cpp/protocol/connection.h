@@ -108,6 +108,7 @@ private:
     bool cipher_enabled_ = false;
     InboundCallbacks cbs_;
     ConnState state_ = ConnState::INITIALISING;
+    bool was_unplugged_ = false;   // true after UNPLUGGED, cleared on next PLUGGED
     mutable Mutex mtx_;
     std::vector<uint8_t> rx_buf_;
 };

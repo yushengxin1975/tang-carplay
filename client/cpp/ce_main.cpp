@@ -164,8 +164,15 @@ static void LogDebugW(const WCHAR *fmt, ...) {
     wbuf[511] = L'\0';
 
     if (g_hLogFile != INVALID_HANDLE_VALUE) {
-        char abuf[512];
-        int alen = WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, abuf, sizeof(abuf) - 3, nullptr, nullptr);
+        // Timestamp prefix: [HH:MM:SS.mmm]
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        WCHAR tsbuf[600];
+        _snwprintf(tsbuf, 599, L"[%02d:%02d:%02d.%03d] %s",
+                   st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, wbuf);
+        tsbuf[599] = L'\0';
+        char abuf[600];
+        int alen = WideCharToMultiByte(CP_UTF8, 0, tsbuf, -1, abuf, sizeof(abuf) - 3, nullptr, nullptr);
         if (alen > 0) {
             abuf[alen - 1] = '\r';
             abuf[alen] = '\n';
@@ -776,8 +783,14 @@ static DWORD WINAPI ClientThread(LPVOID) {
     };
 
     cb.on_plugged = []() {
+        static int s_plug_count = 0;
+        ++s_plug_count;
         g_conn_state = 2;
-        PushEventW(L"OK: CMD_PLUGGED 收到 -> 会话拉起");
+        if (s_plug_count > 1) {
+            PushEventW(L"OK: CMD_PLUGGED (re-plug #%d) -> 重发 sendInit", s_plug_count);
+        } else {
+            PushEventW(L"OK: CMD_PLUGGED 收到 -> 会话拉起");
+        }
         SetLineW(1, L"[在线] iPhone 已连接！CarPlay 运行中");
         SetLineW(2, L"双向触控与音频流已激活");
         if (g_conn) {
