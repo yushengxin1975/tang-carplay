@@ -35,6 +35,13 @@ struct UsbTransport_CE::Impl {
     HANDLE reader_thread = nullptr;
     volatile LONG reader_running = 0;
     RecvCallback recv;
+    // Read buffer size. Must be >= 64KB: the box's initial IDR keyframe
+    // (20-50KB at 1024x600@30) arrives as one USB burst. A 16KB buffer
+    // truncated it, desyncing the H.264 stream — the parser then dropped
+    // every subsequent message (magic check failed) and CarPlay never
+    // launched. libBoxUSB's host_recv has no length limit (only host_send
+    // caps at 0x4000), so a 64KB read buffer is safe.
+    std::size_t read_buf_size = 64 * 1024;
 
     HANDLE (*Open)(void) = nullptr;
     BOOL  (*GetDevList)(HANDLE, void **, DWORD, LPDWORD) = nullptr;
@@ -272,22 +279,38 @@ bool UsbTransport_CE::claim() {
     return false;
 }
 
-void UsbTransport_CE::submitRead(std::size_t, RecvCallback cb) {
+void UsbTransport_CE::submitRead(std::size_t buf_size, RecvCallback cb) {
     if (impl_->reader_thread) return;
     impl_->recv = std::move(cb);
+    if (buf_size < 64 * 1024) buf_size = 64 * 1024;
+    impl_->read_buf_size = buf_size;
     InterlockedExchange(&impl_->reader_running, 1);
     impl_->reader_thread = CreateThread(nullptr, 256 * 1024,
         [](LPVOID arg) -> DWORD {
             Impl *im = static_cast<Impl *>(arg);
-            std::vector<uint8_t> buf(16 * 1024);
+            std::vector<uint8_t> buf(im->read_buf_size);
             // UKW_TF_IN_TRANSFER (0x01) | UKW_TF_SHORT_TRANSFER_OK (0x200)
             const DWORD in_flags = 0x00000001 | 0x00000200;
+            // Read-path health telemetry: reveals whether the client keeps
+            // reading after the first frame (throttled to avoid log spam).
+            DWORD empty_reads = 0, ok_reads = 0;
             while (InterlockedCompareExchange(&im->reader_running, 1, 1) == 1) {
                 if (im->use_box_lib && im->host_recv) {
                     int rx = im->host_recv(buf.data(), static_cast<int>(buf.size()), 100);
                     if (rx > 0 && im->recv) {
+                        ++ok_reads;
+                        if (ok_reads <= 5) {
+                            PushEventW(L"读[libBoxUSB] #%u: %d 字节", (unsigned)ok_reads, rx);
+                        }
+                        empty_reads = 0;
                         im->recv(buf.data(), static_cast<std::size_t>(rx));
                     } else {
+                        ++empty_reads;
+                        // After 100 consecutive empty reads (~10s), log once per 500 more
+                        if (empty_reads == 100 || (empty_reads > 100 && (empty_reads % 500) == 0)) {
+                            PushEventW(L"读[libBoxUSB] 空读 x%u (累计成功 %u 次)",
+                                       (unsigned)empty_reads, (unsigned)ok_reads);
+                        }
                         Sleep(10);
                     }
                 } else if (im->dev && im->BulkXfer) {
@@ -314,6 +337,7 @@ void UsbTransport_CE::write(const uint8_t *data, std::size_t len) {
         int tx = impl_->host_send(const_cast<uint8_t *>(data), static_cast<int>(len), 1000);
         if (tx <= 0) {
             PushEventW(L"写[libBoxUSB]失败: len=%u tx=%d", (unsigned)len, tx);
+            if (error_cb_) error_cb_(tx);  // let the app self-heal (reconnect)
         }
         return;
     }

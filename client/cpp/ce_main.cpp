@@ -52,6 +52,7 @@ static volatile DWORD g_audio_frames = 0;
 static volatile DWORD g_touch_count = 0;
 static volatile int   g_conn_state = 0; // 0=init, 1=ready, 2=online, 3=error
 static volatile int   g_current_volume = 100; // 0..150%
+static volatile LONG  g_write_failures = 0;   // consecutive transport write failures (self-heal trigger)
 
 static carlinkit::WavePlayer g_ce_wave_player;
 static carlinkit::Connection *g_conn = nullptr;
@@ -78,15 +79,20 @@ typedef LONG (WINAPI *SehTopLevelFilter)(SehExceptionPointers *);
 typedef SehTopLevelFilter (WINAPI *PfnSetUnhandledExceptionFilter)(SehTopLevelFilter);
 
 static LONG WINAPI VidSehFilter(SehExceptionPointers *ep) {
+    DWORD code = (ep && ep->ExceptionRecord) ? ep->ExceptionRecord->ExceptionCode : 0;
     // Only intercept when armed by the decode thread on the same thread —
     // a fault in any other thread must not longjmp to a foreign stack.
     if (g_vid_seh_armed && GetCurrentThreadId() == g_vid_seh_tid) {
         g_vid_seh_armed = 0;   // disarm first so a fault in the handler can't loop
         InterlockedIncrement(reinterpret_cast<volatile LONG *>(&g_seh_caught));
-        DWORD code = (ep && ep->ExceptionRecord) ? ep->ExceptionRecord->ExceptionCode : 0;
         LogDebugW(L"[VID] SEH: hardware exception 0x%08X — frame dropped, process survives", code);
         longjmp(g_vid_seh_jmp, 1);  // never returns
     }
+    // Fault in a non-armed thread (e.g. USB stack during replug): we cannot
+    // longjmp to a foreign stack, but logging here captures the crash code
+    // in carplay.log before the process dies — essential diagnostics.
+    LogDebugW(L"[SEH] FATAL: unhandled exception 0x%08X in thread %u (net not armed)",
+              code, (unsigned)GetCurrentThreadId());
     return 0; // EXCEPTION_CONTINUE_SEARCH
 }
 
@@ -713,6 +719,17 @@ static DWORD WINAPI VideoDecodeThread(LPVOID) {
                     g_has_carplay_frame = TRUE;
                     InterlockedIncrement(reinterpret_cast<volatile LONG *>(&g_decoded_frames));
                     if (g_hwnd) InvalidateRect(g_hwnd, nullptr, FALSE);
+                } else {
+                    // Decode failed — log throttled (first 3, then every 200th) so the
+                    // carplay.log reveals WHY (SPS/PPS-only frame = legit no-picture;
+                    // large frame failing = real decoder problem).
+                    static volatile LONG g_decode_fails = 0;
+                    LONG fails = InterlockedIncrement(reinterpret_cast<volatile LONG *>(&g_decode_fails));
+                    if (fails <= 3 || (fails % 200) == 0) {
+                        LogDebugW(L"[VID] decode_frame FAILED #%u: h264_len=%u (decoder_ready=%d)",
+                                  (unsigned)fails, (unsigned)actual_len,
+                                  g_decoder.is_ready() ? 1 : 0);
+                    }
                 }
             }
         }
@@ -780,6 +797,21 @@ static DWORD WINAPI ClientThread(LPVOID) {
     cb.on_any = [](Cmd c, const uint8_t *p, std::size_t n) {
         if (c == Cmd::VIDEO_DATA) {
             InterlockedIncrement(reinterpret_cast<volatile LONG *>(&g_video_frames));
+            // Log the first 3 video payloads (size + first 8 bytes hex) so the
+            // carplay.log reveals what the box actually sends (H.264 NAL starts
+            // with 00 00 00 01; anything else means the stream is not H.264).
+            {
+                static volatile LONG g_vid_logged = 0;
+                LONG logged = InterlockedIncrement(reinterpret_cast<volatile LONG *>(&g_vid_logged));
+                if (logged <= 3) {
+                    unsigned b0 = (n > 0) ? p[0] : 0, b1 = (n > 1) ? p[1] : 0;
+                    unsigned b2 = (n > 2) ? p[2] : 0, b3 = (n > 3) ? p[3] : 0;
+                    unsigned b4 = (n > 4) ? p[4] : 0, b5 = (n > 5) ? p[5] : 0;
+                    unsigned b6 = (n > 6) ? p[6] : 0, b7 = (n > 7) ? p[7] : 0;
+                    LogDebugW(L"[VID] video payload #%u: len=%u bytes=%02X %02X %02X %02X %02X %02X %02X %02X",
+                              (unsigned)logged, (unsigned)n, b0, b1, b2, b3, b4, b5, b6, b7);
+                }
+            }
             if (n > 20) {
                 EnterCriticalSection(&g_vid_cs);
                 const size_t h264_sz = n - 20;
@@ -820,7 +852,14 @@ static DWORD WINAPI ClientThread(LPVOID) {
                 g_ce_wave_player.write(p + 12, n - 12);
             }
         } else {
-            PushEventW(L"msg type=%u len=%u", static_cast<unsigned>(c), static_cast<unsigned>(n));
+            if (c == Cmd::STATE && n >= 4) {
+                // Log the RAW state value — the dispatch layer maps unknown
+                // values to ConnState::UNKNOWN, losing what the box sent.
+                int32_t raw = static_cast<int32_t>(Message::read_u32_le(p));
+                PushEventW(L"msg type=3 (STATE) len=%u raw=%d", (unsigned)n, raw);
+            } else {
+                PushEventW(L"msg type=%u len=%u", static_cast<unsigned>(c), static_cast<unsigned>(n));
+            }
         }
     };
 
@@ -828,7 +867,11 @@ static DWORD WINAPI ClientThread(LPVOID) {
     while (InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&g_running), 1, 1) == 1) {
         try {
             g_conn_state = 0;
+            InterlockedExchange(&g_write_failures, 0);  // reset self-heal counter per session
             auto t = std::make_unique<UsbTransport_CE>();
+            t->setErrorCallback([](int) {
+                InterlockedIncrement(&g_write_failures);
+            });
             SetLineW(1, L"[1/3] 正在检测 USB 盒子 (0x1314:0x1520)...");
 
             g_conn = new Connection(std::move(t), cb);
@@ -846,6 +889,14 @@ static DWORD WINAPI ClientThread(LPVOID) {
                                        nullptr, 0, nullptr);
 
             while (InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&g_running), 1, 1) == 1) {
+                // Self-heal: after 5 consecutive transport write failures the
+                // box link is stale (e.g. iPhone replug reset the gadget) —
+                // tear down and rebuild the whole connection automatically.
+                if (InterlockedCompareExchange(&g_write_failures, 0, 0) >= 5) {
+                    PushEventW(L"自愈: 传输层连续写失败，自动重建连接...");
+                    SetLineW(1, L"[自愈] USB 链路失效，正在自动重连...");
+                    break;
+                }
                 Sleep(200);
             }
 
