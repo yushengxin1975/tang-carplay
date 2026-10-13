@@ -310,11 +310,36 @@ void UsbTransport_CE::submitRead(std::size_t buf_size, RecvCallback cb) {
                     int rx = im->host_recv(buf.data(), static_cast<int>(buf.size()), 100);
                     if (rx > 0 && im->recv) {
                         ++ok_reads;
-                        if (ok_reads <= 5) {
-                            PushEventW(L"读[libBoxUSB] #%u: %d 字节", (unsigned)ok_reads, rx);
+                        // libBoxUSB host_recv returns 17 bytes per call:
+                        //   [1 byte prefix] + [16 bytes protocol data]
+                        // The prefix byte (status/packet-type) is NOT part of
+                        // the Carlinkit wire protocol.  Feeding it into rx_buf_
+                        // corrupts message payloads — headers survive because
+                        // onRecv's magic-scan resyncs past the stray byte, but
+                        // every payload gains an extra byte every 16 positions,
+                        // turning H.264 NAL units and STATE values into garbage.
+                        // Fix: strip the leading byte so only clean protocol
+                        // data reaches Connection::onRecv.
+                        const uint8_t *pdata = buf.data();
+                        int plen = rx;
+                        if (rx > 1) {
+                            // Diagnostic: dump first 8 raw bytes of first 10
+                            // reads so carplay.log confirms the prefix theory.
+                            if (ok_reads <= 10) {
+                                unsigned b0 = buf[0], b1 = (rx>1)?buf[1]:0;
+                                unsigned b2 = (rx>2)?buf[2]:0, b3 = (rx>3)?buf[3]:0;
+                                unsigned b4 = (rx>4)?buf[4]:0, b5 = (rx>5)?buf[5]:0;
+                                unsigned b6 = (rx>6)?buf[6]:0, b7 = (rx>7)?buf[7]:0;
+                                PushEventW(L"读[libBoxUSB] #%u: %d 字节 "
+                                           L"raw=%02X %02X %02X %02X %02X %02X %02X %02X",
+                                           (unsigned)ok_reads, rx,
+                                           b0,b1,b2,b3,b4,b5,b6,b7);
+                            }
+                            pdata = buf.data() + 1;   // skip prefix
+                            plen  = rx - 1;
                         }
                         empty_reads = 0;
-                        im->recv(buf.data(), static_cast<std::size_t>(rx));
+                        im->recv(pdata, static_cast<std::size_t>(plen));
                     } else {
                         ++empty_reads;
                         // After 100 consecutive empty reads (~10s), log once per 500 more
