@@ -26,6 +26,7 @@
 #include <memory>
 #include <vector>
 #include <algorithm>
+#include <setjmp.h>
 
 // ---------------- GUI & State (zero-persistence, Unicode native) ----------------
 static HWND g_hwnd = nullptr;
@@ -55,6 +56,53 @@ static volatile int   g_current_volume = 100; // 0..150%
 static carlinkit::WavePlayer g_ce_wave_player;
 static carlinkit::Connection *g_conn = nullptr;
 static carlinkit::H264Decoder_CE g_decoder;
+
+// ---------------- SEH defense net (WinCE GCC: SJLJ-based SEH emulation) ----------------
+// CeGCC has no MSVC __try/__except. A hardware access violation inside the
+// FFmpeg ARM assembly (swscale/avcodec) would silently kill the whole process
+// (画面瞬间退回原车界面). We install a WinCE unhandled-exception filter and
+// arm it around every decode call; when it fires we longjmp back to the
+// decode thread's safe point and drop just that frame — the process survives.
+static void LogDebugW(const WCHAR *fmt, ...);   // forward decl (defined below)
+static jmp_buf g_vid_seh_jmp;
+static volatile LONG g_vid_seh_armed = 0;
+static volatile DWORD g_vid_seh_tid = 0;
+static volatile LONG g_seh_caught = 0;
+
+// Minimal SEH types (CeGCC headers lack the full WinNT definitions).
+// EXCEPTION_RECORD's first field is ExceptionCode; EXCEPTION_POINTERS is
+// { ExceptionRecord*, ContextRecord* } — layout-stable on WinCE.
+typedef struct SehExceptionRecord { DWORD ExceptionCode; } SehExceptionRecord;
+typedef struct SehExceptionPointers { SehExceptionRecord *ExceptionRecord; void *ContextRecord; } SehExceptionPointers;
+typedef LONG (WINAPI *SehTopLevelFilter)(SehExceptionPointers *);
+typedef SehTopLevelFilter (WINAPI *PfnSetUnhandledExceptionFilter)(SehTopLevelFilter);
+
+static LONG WINAPI VidSehFilter(SehExceptionPointers *ep) {
+    // Only intercept when armed by the decode thread on the same thread —
+    // a fault in any other thread must not longjmp to a foreign stack.
+    if (g_vid_seh_armed && GetCurrentThreadId() == g_vid_seh_tid) {
+        g_vid_seh_armed = 0;   // disarm first so a fault in the handler can't loop
+        InterlockedIncrement(reinterpret_cast<volatile LONG *>(&g_seh_caught));
+        DWORD code = (ep && ep->ExceptionRecord) ? ep->ExceptionRecord->ExceptionCode : 0;
+        LogDebugW(L"[VID] SEH: hardware exception 0x%08X — frame dropped, process survives", code);
+        longjmp(g_vid_seh_jmp, 1);  // never returns
+    }
+    return 0; // EXCEPTION_CONTINUE_SEARCH
+}
+
+static void InstallSehNet() {
+    HMODULE core = GetModuleHandleW(L"coredll.dll");
+    if (!core) return;
+    PfnSetUnhandledExceptionFilter pSet =
+        reinterpret_cast<PfnSetUnhandledExceptionFilter>(
+            GetProcAddressW(core, L"SetUnhandledExceptionFilter"));
+    if (pSet) {
+        pSet(VidSehFilter);
+        LogDebugW(L"[SEH] Unhandled-exception defense net installed");
+    } else {
+        LogDebugW(L"[SEH] SetUnhandledExceptionFilter unavailable — net not installed");
+    }
+}
 
 // Video frame rendering surface (1024x600 16bpp RGB565)
 // Static 8-byte aligned BSS buffer — zero allocation failure risk, never NULL
@@ -151,6 +199,14 @@ static void AdjustVolume(int delta) {
     if (v > 150) v = 150;
     g_current_volume = v;
     g_ce_wave_player.set_volume(v);
+    // Sync the volume key to the box (CMD_CONTROL 300=down / 301=up) so the
+    // iPhone-side volume follows the head-unit adjustment.
+    if (g_conn && delta != 0) {
+        try {
+            g_conn->send(carlinkit::Message::Control(
+                delta < 0 ? carlinkit::BTN_VOLUME_DOWN : carlinkit::BTN_VOLUME_UP));
+        } catch (...) {}
+    }
     PushEventW(L"音量调至 %d%%", v);
     LogDebugW(L"[VOL] Volume adjusted to %d%%", v);
     if (g_hwnd) InvalidateRect(g_hwnd, nullptr, FALSE);
@@ -630,13 +686,24 @@ static DWORD WINAPI VideoDecodeThread(LPVOID) {
             if (!nal_buffer.empty() && g_decoder.is_ready()) {
                 int fw = 0, fh = 0;
                 size_t actual_len = (nal_buffer.size() > 64) ? (nal_buffer.size() - 64) : nal_buffer.size();
-                bool ok = false;
-                try {
-                    ok = g_decoder.decode_frame(nal_buffer.data(), actual_len,
-                                                reinterpret_cast<uint8_t*>(g_carplay_pixels),
-                                                1024 * 2, &fw, &fh, /*flip_vertical=*/true);
-                } catch (...) {
-                    LogDebugW(L"[VID] EXCEPTION in decode_frame!");
+                volatile bool ok = false;
+                if (setjmp(g_vid_seh_jmp) == 0) {
+                    // Arm the SEH net: any hardware access violation inside the
+                    // FFmpeg ARM assembly lands in VidSehFilter and longjmps
+                    // back here — only this frame is dropped, process survives.
+                    g_vid_seh_tid = GetCurrentThreadId();
+                    g_vid_seh_armed = 1;
+                    try {
+                        ok = g_decoder.decode_frame(nal_buffer.data(), actual_len,
+                                                    reinterpret_cast<uint8_t*>(g_carplay_pixels),
+                                                    1024 * 2, &fw, &fh, /*flip_vertical=*/true);
+                    } catch (...) {
+                        LogDebugW(L"[VID] EXCEPTION in decode_frame!");
+                    }
+                    g_vid_seh_armed = 0;
+                } else {
+                    // SEH filter caught a hardware exception — frame dropped silently
+                    ok = false;
                 }
                 if (ok) {
                     if (!g_has_carplay_frame) {
@@ -818,6 +885,7 @@ static DWORD WINAPI ClientThread(LPVOID) {
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
     InitLogging();
     LogDebugW(L"[MAIN] Application starting");
+    InstallSehNet();
 
     WNDCLASSW wc{};
     wc.lpfnWndProc = WndProc;

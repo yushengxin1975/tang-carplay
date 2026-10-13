@@ -68,6 +68,10 @@ constexpr uint8_t BTN_PLAY             = 201;
 constexpr uint8_t BTN_PAUSE            = 202;
 constexpr uint8_t BTN_NEXT_TRACK       = 204;
 constexpr uint8_t BTN_PREVIOUS_TRACK   = 205;
+// Volume keys (FastCarPlay protocol_const.h: "Unknown buttons, volume????")
+// PC->Box CMD_CONTROL payload: 300 = volume down, 301 = volume up
+constexpr uint32_t BTN_VOLUME_DOWN     = 300;
+constexpr uint32_t BTN_VOLUME_UP       = 301;
 
 // Media sizing
 constexpr uint32_t AUDIO_BUFFER_SIZE    = 2560;
