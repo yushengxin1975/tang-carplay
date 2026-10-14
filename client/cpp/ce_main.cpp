@@ -226,6 +226,337 @@ static void AdjustVolume(int delta) {
     if (g_hwnd) InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
+// ---------------- WinCE Network & RNDIS Environment Probe ----------------
+static bool StrContainsIgnoreCase(const WCHAR *haystack, const WCHAR *needle) {
+    if (!haystack || !needle) return false;
+    size_t nlen = wcslen(needle);
+    if (nlen == 0) return true;
+    size_t hlen = wcslen(haystack);
+    if (hlen < nlen) return false;
+    for (size_t i = 0; i <= hlen - nlen; ++i) {
+        bool match = true;
+        for (size_t j = 0; j < nlen; ++j) {
+            WCHAR c1 = haystack[i + j];
+            WCHAR c2 = needle[j];
+            if (c1 >= L'A' && c1 <= L'Z') c1 += (L'a' - L'A');
+            if (c2 >= L'A' && c2 <= L'Z') c2 += (L'a' - L'A');
+            if (c1 != c2) { match = false; break; }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
+#define MAX_ADAPTER_NAME_LEN_CE 256
+#define MAX_ADAPTER_DESC_LEN_CE 128
+
+typedef struct {
+    char String[16];
+} IP_ADDR_STR_CE;
+
+typedef struct _IP_ADDR_NODE_CE {
+    struct _IP_ADDR_NODE_CE *Next;
+    IP_ADDR_STR_CE IpAddress;
+    IP_ADDR_STR_CE IpMask;
+    DWORD Context;
+} IP_ADDR_NODE_CE;
+
+typedef struct _IP_ADAPTER_INFO_CE {
+    struct _IP_ADAPTER_INFO_CE *Next;
+    DWORD ComboIndex;
+    char AdapterName[MAX_ADAPTER_NAME_LEN_CE + 4];
+    char Description[MAX_ADAPTER_DESC_LEN_CE + 4];
+    UINT AddressLength;
+    BYTE Address[8];
+    DWORD Index;
+    UINT Type;
+    UINT DhcpEnabled;
+    IP_ADDR_NODE_CE *CurrentIpAddress;
+    IP_ADDR_NODE_CE IpAddressList;
+    IP_ADDR_NODE_CE GatewayList;
+    IP_ADDR_NODE_CE DhcpServer;
+    BOOL HaveWins;
+    IP_ADDR_NODE_CE PrimaryWinsServer;
+    IP_ADDR_NODE_CE SecondaryWinsServer;
+    long LeaseObtained;
+    long LeaseExpires;
+} IP_ADAPTER_INFO_CE;
+
+typedef DWORD (WINAPI *PfnGetAdaptersInfo)(IP_ADAPTER_INFO_CE *pAdapterInfo, ULONG *pOutBufLen);
+
+static void ProbeNetworkAndRndis() {
+    LogDebugW(L"[RNDIS] ========================================================");
+    LogDebugW(L"[RNDIS] Starting WinCE Network & RNDIS Driver Diagnostic Probe");
+    LogDebugW(L"[RNDIS] ========================================================");
+
+    struct FileProbe {
+        const WCHAR *path;
+        const WCHAR *desc;
+        const WCHAR *category;
+    };
+
+    static const FileProbe kTargets[] = {
+        // RNDIS Host & Device
+        { L"\\Windows\\rndismp.dll", L"RNDIS Host Miniport (USB Tethering / PC-RNDIS Link)", L"RNDIS" },
+        { L"\\Windows\\rndisfn.dll", L"RNDIS Function Driver (Device OTG Client)", L"RNDIS" },
+        { L"\\Windows\\usbrndis.dll", L"USB RNDIS Class Driver", L"RNDIS" },
+        { L"\\Windows\\usb8023.dll", L"USB 802.3 Adapter Driver", L"RNDIS" },
+
+        // USB-to-Ethernet Adapter Drivers
+        { L"\\Windows\\ax88772.dll", L"ASIX AX88772 USB 2.0 Fast Ethernet", L"USBNET" },
+        { L"\\Windows\\asix.dll",    L"ASIX USB Ethernet Generic Driver", L"USBNET" },
+        { L"\\Windows\\ax88178.dll", L"ASIX AX88178 USB Gigabit Ethernet", L"USBNET" },
+        { L"\\Windows\\dm9621.dll",  L"Davicom DM9621 USB Fast Ethernet", L"USBNET" },
+        { L"\\Windows\\dm9620.dll",  L"Davicom DM9620 USB Fast Ethernet", L"USBNET" },
+        { L"\\Windows\\dm9000.dll",  L"Davicom DM9000 Ethernet Driver", L"USBNET" },
+        { L"\\Windows\\rtl8150.dll", L"Realtek RTL8150 USB Ethernet", L"USBNET" },
+        { L"\\Windows\\rtl8152.dll", L"Realtek RTL8152 USB Ethernet", L"USBNET" },
+        { L"\\Windows\\rt8150.dll",  L"Realtek RT8150 Alternative Driver", L"USBNET" },
+        { L"\\Windows\\pegasus.dll", L"Pegasus USB Ethernet Driver", L"USBNET" },
+        { L"\\Windows\\usbnet.dll",  L"Generic USB Network Driver", L"USBNET" },
+
+        // Core Network Stack & Protocol DLLs
+        { L"\\Windows\\ndis.dll",     L"NDIS Core Subsystem", L"STACK" },
+        { L"\\Windows\\tcpstk.dll",   L"TCP/IP Protocol Stack", L"STACK" },
+        { L"\\Windows\\iphlpapi.dll", L"IP Helper API Library", L"STACK" },
+        { L"\\Windows\\dhcp.dll",     L"DHCP Client Service", L"STACK" },
+        { L"\\Windows\\afd.dll",      L"Ancillary Function Driver (Sockets)", L"STACK" },
+        { L"\\Windows\\ws2.dll",      L"Winsock 2.0 Subsystem", L"STACK" },
+
+        // Remote Debugging, Console & System Daemons
+        { L"\\Windows\\cmd.exe",      L"WinCE Command Prompt Shell", L"DEBUG" },
+        { L"\\Windows\\telnetd.dll",  L"Telnet Server Daemon", L"DEBUG" },
+        { L"\\Windows\\ftpd.dll",     L"FTP Server Daemon", L"DEBUG" },
+        { L"\\Windows\\services.exe", L"WinCE Services Manager", L"DEBUG" },
+        { L"\\Windows\\conman.exe",   L"Visual Studio Device Connectivity Manager", L"DEBUG" },
+    };
+
+    BOOL has_rndismp = FALSE;
+    BOOL has_rndisfn = FALSE;
+    BOOL has_asix = FALSE;
+    BOOL has_davicom = FALSE;
+    BOOL has_realtek = FALSE;
+    BOOL has_tcpstk = FALSE;
+    BOOL has_ndis = FALSE;
+    BOOL has_cmd = FALSE;
+    BOOL has_telnet = FALSE;
+
+    // 1. File existence checks in \Windows\
+    LogDebugW(L"[RNDIS] --- Checking Driver & Tool Files in \\Windows\\ ---");
+    for (size_t i = 0; i < sizeof(kTargets) / sizeof(kTargets[0]); ++i) {
+        DWORD attr = GetFileAttributesW(kTargets[i].path);
+        BOOL exists = (attr != 0xFFFFFFFF);
+        if (exists) {
+            LogDebugW(L"[RNDIS] [FOUND] %s (%s)", kTargets[i].path, kTargets[i].desc);
+            if (wcscmp(kTargets[i].path, L"\\Windows\\rndismp.dll") == 0) has_rndismp = TRUE;
+            if (wcscmp(kTargets[i].path, L"\\Windows\\rndisfn.dll") == 0) has_rndisfn = TRUE;
+            if (StrContainsIgnoreCase(kTargets[i].path, L"asix") || StrContainsIgnoreCase(kTargets[i].path, L"ax88")) has_asix = TRUE;
+            if (StrContainsIgnoreCase(kTargets[i].path, L"dm96")) has_davicom = TRUE;
+            if (StrContainsIgnoreCase(kTargets[i].path, L"rtl81") || StrContainsIgnoreCase(kTargets[i].path, L"rt81")) has_realtek = TRUE;
+            if (wcscmp(kTargets[i].path, L"\\Windows\\tcpstk.dll") == 0) has_tcpstk = TRUE;
+            if (wcscmp(kTargets[i].path, L"\\Windows\\ndis.dll") == 0) has_ndis = TRUE;
+            if (wcscmp(kTargets[i].path, L"\\Windows\\cmd.exe") == 0) has_cmd = TRUE;
+            if (wcscmp(kTargets[i].path, L"\\Windows\\telnetd.dll") == 0) has_telnet = TRUE;
+        } else {
+            LogDebugW(L"[RNDIS] [absent] %s", kTargets[i].path);
+        }
+    }
+
+    // 2. Registry Scan: HKLM\Comm
+    LogDebugW(L"[RNDIS] --- Scanning Registry: HKLM\\Comm ---");
+    HKEY hComm = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"Comm", 0, 0, &hComm) == ERROR_SUCCESS) {
+        DWORD idx = 0;
+        WCHAR subName[256];
+        DWORD nameLen = 256;
+        while (RegEnumKeyExW(hComm, idx, subName, &nameLen, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+            HKEY hSub = nullptr;
+            WCHAR dispName[128] = {0};
+            WCHAR group[64] = {0};
+            WCHAR imgPath[128] = {0};
+            DWORD cbDisp = sizeof(dispName);
+            DWORD cbGroup = sizeof(group);
+            DWORD cbImg = sizeof(imgPath);
+
+            if (RegOpenKeyExW(hComm, subName, 0, 0, &hSub) == ERROR_SUCCESS) {
+                RegQueryValueExW(hSub, L"DisplayName", nullptr, nullptr, (LPBYTE)dispName, &cbDisp);
+                RegQueryValueExW(hSub, L"Group", nullptr, nullptr, (LPBYTE)group, &cbGroup);
+                RegQueryValueExW(hSub, L"ImagePath", nullptr, nullptr, (LPBYTE)imgPath, &cbImg);
+                RegCloseKey(hSub);
+            }
+            dispName[127] = L'\0';
+            group[63] = L'\0';
+            imgPath[127] = L'\0';
+
+            LogDebugW(L"[RNDIS] Comm Adapter Entry: %s | DisplayName=\"%s\", Group=\"%s\", Image=\"%s\"",
+                      subName, dispName, group, imgPath);
+
+            if (StrContainsIgnoreCase(subName, L"RNDIS") || StrContainsIgnoreCase(imgPath, L"RNDIS")) {
+                LogDebugW(L"[RNDIS] -> MATCHED RNDIS DRIVER IN COMM: %s", subName);
+            }
+            if (StrContainsIgnoreCase(subName, L"ASIX") || StrContainsIgnoreCase(imgPath, L"asix") || StrContainsIgnoreCase(subName, L"AX88")) {
+                LogDebugW(L"[RNDIS] -> MATCHED ASIX DRIVER IN COMM: %s", subName);
+            }
+            if (StrContainsIgnoreCase(subName, L"DM96") || StrContainsIgnoreCase(imgPath, L"dm96")) {
+                LogDebugW(L"[RNDIS] -> MATCHED DAVICOM DRIVER IN COMM: %s", subName);
+            }
+
+            idx++;
+            nameLen = 256;
+        }
+
+        // Query TCP/IP Bindings
+        HKEY hTcpLink = nullptr;
+        if (RegOpenKeyExW(hComm, L"Tcpip\\Linkage", 0, 0, &hTcpLink) == ERROR_SUCCESS) {
+            WCHAR bindBuf[512] = {0};
+            DWORD cbBind = sizeof(bindBuf);
+            if (RegQueryValueExW(hTcpLink, L"Bind", nullptr, nullptr, (LPBYTE)bindBuf, &cbBind) == ERROR_SUCCESS) {
+                bindBuf[511] = L'\0';
+                WCHAR *p = bindBuf;
+                LogDebugW(L"[RNDIS] TCP/IP Active Bindings:");
+                while (*p && (p - bindBuf < 510)) {
+                    LogDebugW(L"[RNDIS]   -> Bound: %s", p);
+                    p += wcslen(p) + 1;
+                }
+            }
+            RegCloseKey(hTcpLink);
+        }
+
+        RegCloseKey(hComm);
+    } else {
+        LogDebugW(L"[RNDIS] WARN: Could not open HKLM\\Comm");
+    }
+
+    // 3. Registry Scan: HKLM\Drivers\USB\LoadClients
+    LogDebugW(L"[RNDIS] --- Scanning Registry: HKLM\\Drivers\\USB\\LoadClients ---");
+    static const WCHAR *kRndisClassKeys[] = {
+        L"Drivers\\USB\\LoadClients\\Default\\Default\\224_1_3",
+        L"Drivers\\USB\\LoadClients\\Default\\Default\\2_2_255",
+        L"Drivers\\USB\\LoadClients\\Default\\Default\\2_2_1",
+    };
+    for (size_t k = 0; k < sizeof(kRndisClassKeys) / sizeof(kRndisClassKeys[0]); ++k) {
+        HKEY hRndis = nullptr;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kRndisClassKeys[k], 0, 0, &hRndis) == ERROR_SUCCESS) {
+            WCHAR dllVal[128] = {0};
+            DWORD cbDll = sizeof(dllVal);
+            RegQueryValueExW(hRndis, L"DLL", nullptr, nullptr, (LPBYTE)dllVal, &cbDll);
+            dllVal[127] = L'\0';
+            LogDebugW(L"[RNDIS] USB LoadClient [FOUND]: %s -> DLL=\"%s\"", kRndisClassKeys[k], dllVal);
+            RegCloseKey(hRndis);
+        } else {
+            LogDebugW(L"[RNDIS] USB LoadClient [not set]: %s", kRndisClassKeys[k]);
+        }
+    }
+
+    // 4. Registry Scan: HKLM\Drivers\Active
+    LogDebugW(L"[RNDIS] --- Scanning Registry: HKLM\\Drivers\\Active ---");
+    HKEY hActive = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"Drivers\\Active", 0, 0, &hActive) == ERROR_SUCCESS) {
+        DWORD idx = 0;
+        WCHAR subName[64];
+        DWORD nameLen = 64;
+        while (RegEnumKeyExW(hActive, idx, subName, &nameLen, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+            HKEY hSub = nullptr;
+            WCHAR drvName[64] = {0};
+            WCHAR drvKey[256] = {0};
+            DWORD cbName = sizeof(drvName);
+            DWORD cbKey = sizeof(drvKey);
+
+            if (RegOpenKeyExW(hActive, subName, 0, 0, &hSub) == ERROR_SUCCESS) {
+                RegQueryValueExW(hSub, L"Name", nullptr, nullptr, (LPBYTE)drvName, &cbName);
+                RegQueryValueExW(hSub, L"Key", nullptr, nullptr, (LPBYTE)drvKey, &cbKey);
+                RegCloseKey(hSub);
+            }
+            drvName[63] = L'\0';
+            drvKey[255] = L'\0';
+
+            if (StrContainsIgnoreCase(drvName, L"NDS") || StrContainsIgnoreCase(drvName, L"ETH") ||
+                StrContainsIgnoreCase(drvName, L"NET") || StrContainsIgnoreCase(drvKey, L"Comm") ||
+                StrContainsIgnoreCase(drvKey, L"RNDIS") || StrContainsIgnoreCase(drvKey, L"asix") ||
+                StrContainsIgnoreCase(drvKey, L"dm96")) {
+                LogDebugW(L"[RNDIS] Active Network/Comm Driver [%s]: Name=\"%s\", Key=\"%s\"",
+                          subName, drvName, drvKey);
+            }
+
+            idx++;
+            nameLen = 64;
+        }
+        RegCloseKey(hActive);
+    }
+
+    // 5. Dynamic IP Helper Probe (iphlpapi.dll)
+    LogDebugW(L"[RNDIS] --- Probing Active Adapters via iphlpapi.dll ---");
+    HMODULE hIpHlp = LoadLibraryW(L"iphlpapi.dll");
+    int liveAdapters = 0;
+    if (hIpHlp) {
+        PfnGetAdaptersInfo pGetAdaptersInfo =
+            reinterpret_cast<PfnGetAdaptersInfo>(GetProcAddressW(hIpHlp, L"GetAdaptersInfo"));
+        if (pGetAdaptersInfo) {
+            BYTE ipBuf[4096];
+            ULONG outLen = sizeof(ipBuf);
+            DWORD dwRet = pGetAdaptersInfo(reinterpret_cast<IP_ADAPTER_INFO_CE *>(ipBuf), &outLen);
+            if (dwRet == 0) {
+                IP_ADAPTER_INFO_CE *cur = reinterpret_cast<IP_ADAPTER_INFO_CE *>(ipBuf);
+                while (cur) {
+                    liveAdapters++;
+                    LogDebugW(L"[RNDIS] Live Adapter #%d: [%S] Desc=\"%S\", IP=%S, Mask=%S, GW=%S, MAC=%02X:%02X:%02X:%02X:%02X:%02X, DHCP=%u",
+                              liveAdapters,
+                              cur->AdapterName,
+                              cur->Description,
+                              cur->IpAddressList.IpAddress.String,
+                              cur->IpAddressList.IpMask.String,
+                              cur->GatewayList.IpAddress.String,
+                              cur->Address[0], cur->Address[1], cur->Address[2],
+                              cur->Address[3], cur->Address[4], cur->Address[5],
+                              cur->DhcpEnabled);
+                    PushEventW(L"网卡#%d: %S IP:%S",
+                               liveAdapters, cur->AdapterName, cur->IpAddressList.IpAddress.String);
+                    cur = cur->Next;
+                }
+            } else {
+                LogDebugW(L"[RNDIS] GetAdaptersInfo returned %u (no active network adapter or media disconnected)", dwRet);
+            }
+        } else {
+            LogDebugW(L"[RNDIS] GetAdaptersInfo export missing in iphlpapi.dll");
+        }
+        FreeLibrary(hIpHlp);
+    } else {
+        LogDebugW(L"[RNDIS] iphlpapi.dll not available on system");
+    }
+
+    // 6. Summary Verdict & UI Output
+    LogDebugW(L"[RNDIS] ==================== PROBE SUMMARY ====================");
+    LogDebugW(L"[RNDIS]  - RNDIS Host miniport (rndismp.dll) : %s", has_rndismp ? L"YES (SUPPORTED)" : L"NO");
+    LogDebugW(L"[RNDIS]  - RNDIS OTG function  (rndisfn.dll) : %s", has_rndisfn ? L"YES (SUPPORTED)" : L"NO");
+    LogDebugW(L"[RNDIS]  - ASIX USB-Ethernet   (asix/ax88772): %s", has_asix ? L"YES (SUPPORTED)" : L"NO");
+    LogDebugW(L"[RNDIS]  - Davicom USB-Ethernet(dm9621.dll)  : %s", has_davicom ? L"YES (SUPPORTED)" : L"NO");
+    LogDebugW(L"[RNDIS]  - Realtek USB-Ethernet(rtl8150.dll) : %s", has_realtek ? L"YES (SUPPORTED)" : L"NO");
+    LogDebugW(L"[RNDIS]  - TCP/IP Stack        (tcpstk/ndis) : %s", (has_tcpstk && has_ndis) ? L"YES (READY)" : L"PARTIAL/NO");
+    LogDebugW(L"[RNDIS]  - WinCE Shell Tools   (cmd/telnetd) : %s / %s",
+              has_cmd ? L"CMD: YES" : L"CMD: NO",
+              has_telnet ? L"Telnet: YES" : L"Telnet: NO");
+    LogDebugW(L"[RNDIS]  - Live Network Adapters Count        : %d", liveAdapters);
+    LogDebugW(L"[RNDIS] ========================================================");
+
+    PushEventW(L"=== 网络/RNDIS 探针 ===");
+    if (has_rndismp) {
+        PushEventW(L"[OK] 发现 RNDIS 主机驱动 (rndismp.dll)");
+    } else if (has_rndisfn) {
+        PushEventW(L"[提示] 发现 RNDIS 从机驱动 (rndisfn.dll)");
+    } else {
+        PushEventW(L"[无] 未发现 RNDIS 驱动 (无 rndismp.dll)");
+    }
+
+    if (has_asix) PushEventW(L"[OK] 发现 ASIX 驱动 (支持 AX88772 网卡)");
+    if (has_davicom) PushEventW(L"[OK] 发现 Davicom 驱动 (支持 DM9621 网卡)");
+    if (has_realtek) PushEventW(L"[OK] 发现 Realtek 驱动 (支持 RTL8150 网卡)");
+
+    if (has_cmd || has_telnet) {
+        PushEventW(L"[调试] 发现: %s%s", has_telnet ? L"Telnet服务 " : L"", has_cmd ? L"CMD控制台" : L"");
+    }
+    PushEventW(L"探针完毕，详报已写入 carplay.log [RNDIS]");
+}
+
 #define WC_CARLINKIT L"Carlinkit"
 
 static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
@@ -997,6 +1328,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
 
     ShowWindow(g_hwnd, nShow ? nShow : SW_SHOW);
     UpdateWindow(g_hwnd);
+
+    // Network & RNDIS driver diagnostic probe
+    ProbeNetworkAndRndis();
 
     // Dedicated video decode thread (flags = 0)
     HANDLE vdt = CreateThread(nullptr, 256 * 1024, VideoDecodeThread, nullptr, 0, nullptr);
