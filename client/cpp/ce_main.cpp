@@ -133,7 +133,27 @@ static volatile BOOL g_has_pending_video = FALSE;
 // Persistent diagnostic file logging via WinCE native CreateFileW
 static HANDLE g_hLogFile = INVALID_HANDLE_VALUE;
 
+// UDP Live Log Streaming (broadcasts logs to port 9999 over vehicle router)
+static SOCKET g_udpLogSock = INVALID_SOCKET;
+static sockaddr_in g_udpBroadcastAddr{};
+
+static void InitUdpLogging() {
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) == 0) {
+        g_udpLogSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (g_udpLogSock != INVALID_SOCKET) {
+            BOOL opt = TRUE;
+            setsockopt(g_udpLogSock, SOL_SOCKET, SO_BROADCAST, (const char *)&opt, sizeof(opt));
+            memset(&g_udpBroadcastAddr, 0, sizeof(g_udpBroadcastAddr));
+            g_udpBroadcastAddr.sin_family = AF_INET;
+            g_udpBroadcastAddr.sin_port = htons(9999);
+            g_udpBroadcastAddr.sin_addr.s_addr = 0xFFFFFFFF; // 255.255.255.255 (INADDR_BROADCAST)
+        }
+    }
+}
+
 static void InitLogging() {
+    InitUdpLogging();
     WCHAR exePath[MAX_PATH];
     if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) > 0) {
         WCHAR *pSlash = wcsrchr(exePath, L'\\');
@@ -163,24 +183,28 @@ static void LogDebugW(const WCHAR *fmt, ...) {
     va_end(ap);
     wbuf[511] = L'\0';
 
-    if (g_hLogFile != INVALID_HANDLE_VALUE) {
-        // Timestamp prefix: [HH:MM:SS.mmm]
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-        WCHAR tsbuf[600];
-        _snwprintf(tsbuf, 599, L"[%02d:%02d:%02d.%03d] %s",
-                   st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, wbuf);
-        tsbuf[599] = L'\0';
-        char abuf[600];
-        int alen = WideCharToMultiByte(CP_UTF8, 0, tsbuf, -1, abuf, sizeof(abuf) - 3, nullptr, nullptr);
-        if (alen > 0) {
-            abuf[alen - 1] = '\r';
-            abuf[alen] = '\n';
-            DWORD written = 0;
-            WriteFile(g_hLogFile, abuf, alen + 1, &written, nullptr);
-            FlushFileBuffers(g_hLogFile);
-        }
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    WCHAR tsbuf[600];
+    _snwprintf(tsbuf, 599, L"[%02d:%02d:%02d.%03d] %s",
+               st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, wbuf);
+    tsbuf[599] = L'\0';
+    char abuf[600];
+    int alen = WideCharToMultiByte(CP_UTF8, 0, tsbuf, -1, abuf, sizeof(abuf) - 3, nullptr, nullptr);
+
+    if (g_hLogFile != INVALID_HANDLE_VALUE && alen > 0) {
+        abuf[alen - 1] = '\r';
+        abuf[alen] = '\n';
+        DWORD written = 0;
+        WriteFile(g_hLogFile, abuf, alen + 1, &written, nullptr);
+        FlushFileBuffers(g_hLogFile);
     }
+
+    if (g_udpLogSock != INVALID_SOCKET && alen > 0) {
+        sendto(g_udpLogSock, abuf, alen + 1, 0,
+               (const sockaddr *)&g_udpBroadcastAddr, sizeof(g_udpBroadcastAddr));
+    }
+
     OutputDebugStringW(wbuf);
 }
 
@@ -303,6 +327,8 @@ static void ProbeNetworkAndRndis() {
         { L"\\Windows\\usb8023.dll", L"USB 802.3 Adapter Driver", L"RNDIS" },
 
         // USB-to-Ethernet Adapter Drivers
+        { L"\\Windows\\qf9700usb.dll", L"CoreChip QF9700/SR9700 USB Fast Ethernet Driver", L"USBNET" },
+        { L"\\Windows\\QF9700USB.dll", L"CoreChip QF9700/SR9700 USB Fast Ethernet Driver", L"USBNET" },
         { L"\\Windows\\ax88772.dll", L"ASIX AX88772 USB 2.0 Fast Ethernet", L"USBNET" },
         { L"\\Windows\\asix.dll",    L"ASIX USB Ethernet Generic Driver", L"USBNET" },
         { L"\\Windows\\ax88178.dll", L"ASIX AX88178 USB Gigabit Ethernet", L"USBNET" },
@@ -333,6 +359,7 @@ static void ProbeNetworkAndRndis() {
 
     BOOL has_rndismp = FALSE;
     BOOL has_rndisfn = FALSE;
+    BOOL has_qf9700 = FALSE;
     BOOL has_asix = FALSE;
     BOOL has_davicom = FALSE;
     BOOL has_realtek = FALSE;
@@ -350,6 +377,7 @@ static void ProbeNetworkAndRndis() {
             LogDebugW(L"[RNDIS] [FOUND] %s (%s)", kTargets[i].path, kTargets[i].desc);
             if (wcscmp(kTargets[i].path, L"\\Windows\\rndismp.dll") == 0) has_rndismp = TRUE;
             if (wcscmp(kTargets[i].path, L"\\Windows\\rndisfn.dll") == 0) has_rndisfn = TRUE;
+            if (StrContainsIgnoreCase(kTargets[i].path, L"qf9700")) has_qf9700 = TRUE;
             if (StrContainsIgnoreCase(kTargets[i].path, L"asix") || StrContainsIgnoreCase(kTargets[i].path, L"ax88")) has_asix = TRUE;
             if (StrContainsIgnoreCase(kTargets[i].path, L"dm96")) has_davicom = TRUE;
             if (StrContainsIgnoreCase(kTargets[i].path, L"rtl81") || StrContainsIgnoreCase(kTargets[i].path, L"rt81")) has_realtek = TRUE;
@@ -528,6 +556,7 @@ static void ProbeNetworkAndRndis() {
     LogDebugW(L"[RNDIS] ==================== PROBE SUMMARY ====================");
     LogDebugW(L"[RNDIS]  - RNDIS Host miniport (rndismp.dll) : %s", has_rndismp ? L"YES (SUPPORTED)" : L"NO");
     LogDebugW(L"[RNDIS]  - RNDIS OTG function  (rndisfn.dll) : %s", has_rndisfn ? L"YES (SUPPORTED)" : L"NO");
+    LogDebugW(L"[RNDIS]  - QF9700 USB-Ethernet(qf9700usb.dll): %s", has_qf9700 ? L"YES (SUPPORTED)" : L"NO");
     LogDebugW(L"[RNDIS]  - ASIX USB-Ethernet   (asix/ax88772): %s", has_asix ? L"YES (SUPPORTED)" : L"NO");
     LogDebugW(L"[RNDIS]  - Davicom USB-Ethernet(dm9621.dll)  : %s", has_davicom ? L"YES (SUPPORTED)" : L"NO");
     LogDebugW(L"[RNDIS]  - Realtek USB-Ethernet(rtl8150.dll) : %s", has_realtek ? L"YES (SUPPORTED)" : L"NO");
@@ -538,13 +567,14 @@ static void ProbeNetworkAndRndis() {
     LogDebugW(L"[RNDIS]  - Live Network Adapters Count        : %d", liveAdapters);
     LogDebugW(L"[RNDIS] ========================================================");
 
-    PushEventW(L"=== 网络/RNDIS 探针 ===");
+    PushEventW(L"=== 网络/网卡驱动探针 ===");
+    if (has_qf9700) {
+        PushEventW(L"[OK] 发现 QF9700 驱动 (已挂载 SR9700 网卡)");
+    }
     if (has_rndismp) {
         PushEventW(L"[OK] 发现 RNDIS 主机驱动 (rndismp.dll)");
     } else if (has_rndisfn) {
         PushEventW(L"[提示] 发现 RNDIS 从机驱动 (rndisfn.dll)");
-    } else {
-        PushEventW(L"[无] 未发现 RNDIS 驱动 (无 rndismp.dll)");
     }
 
     if (has_asix) PushEventW(L"[OK] 发现 ASIX 驱动 (支持 AX88772 网卡)");
@@ -553,6 +583,9 @@ static void ProbeNetworkAndRndis() {
 
     if (has_cmd || has_telnet) {
         PushEventW(L"[调试] 发现: %s%s", has_telnet ? L"Telnet服务 " : L"", has_cmd ? L"CMD控制台" : L"");
+    }
+    if (liveAdapters > 0) {
+        PushEventW(L"[网络] 实时日志已在 UDP:9999 广播推流中");
     }
     PushEventW(L"探针完毕，详报已写入 carplay.log [RNDIS]");
 }
@@ -1365,6 +1398,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
     if (g_hLogFile != INVALID_HANDLE_VALUE) {
         CloseHandle(g_hLogFile);
         g_hLogFile = INVALID_HANDLE_VALUE;
+    }
+    if (g_udpLogSock != INVALID_SOCKET) {
+        closesocket(g_udpLogSock);
+        g_udpLogSock = INVALID_SOCKET;
+        WSACleanup();
     }
     return 0;
 }

@@ -143,6 +143,33 @@ static bool EnsureDriverInstalled(const WCHAR *appDir) {
     ActivateDeviceEx(L"Drivers\\BuiltIn\\Usb_Box", NULL, 0, 0);
 #endif
 
+    // 4. CoreChip QF9700 USB 2.0 Fast Ethernet Driver (VID 0x0FE6 = 4070, PID 0x9700 = 38656)
+    WCHAR srcQf[MAX_PATH] = {0};
+    _snwprintf(srcQf, MAX_PATH - 1, L"%s\\QF9700USB.dll", appDir);
+    BOOL cQf = CopyFileW(srcQf, L"\\Windows\\qf9700usb.dll", FALSE);
+    CopyFileW(srcQf, L"\\Windows\\QF9700USB.dll", FALSE);
+    const WCHAR *qfDrvPath = cQf ? L"qf9700usb.dll" : srcQf;
+
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\LoadClients\\4070_38656\\Default\\Default\\QF9700USB", L"DLL", qfDrvPath);
+    regStr(HKEY_LOCAL_MACHINE, L"Drivers\\USB\\ClientDrivers\\QF9700USB", L"DLL", qfDrvPath);
+
+    regStr(HKEY_LOCAL_MACHINE, L"Comm\\QF9700USB", L"DisplayName", L"CoreChip Fast Ethernet Adapter over USB");
+    regStr(HKEY_LOCAL_MACHINE, L"Comm\\QF9700USB", L"Group", L"NDIS");
+    regStr(HKEY_LOCAL_MACHINE, L"Comm\\QF9700USB", L"ImagePath", qfDrvPath);
+
+    regStr(HKEY_LOCAL_MACHINE, L"Comm\\QF9700USB1", L"DisplayName", L"CoreChip Fast Ethernet Adapter over USB");
+    regStr(HKEY_LOCAL_MACHINE, L"Comm\\QF9700USB1", L"Group", L"NDIS");
+    regStr(HKEY_LOCAL_MACHINE, L"Comm\\QF9700USB1", L"ImagePath", qfDrvPath);
+
+    regDw(HKEY_LOCAL_MACHINE, L"Comm\\QF9700USB1\\Parms", L"BusNumber", 0);
+    regDw(HKEY_LOCAL_MACHINE, L"Comm\\QF9700USB1\\Parms", L"BusType", 1);
+
+    // DHCP enabled for car router automatic IP assignment
+    regDw(HKEY_LOCAL_MACHINE, L"Comm\\QF9700USB1\\Parms\\TCPIP", L"EnableDHCP", 1);
+    regDw(HKEY_LOCAL_MACHINE, L"Comm\\QF9700USB1\\Parms\\TCPIP", L"UseZeroBroadcast", 0);
+
+    PushEventW(L"网卡驱动配置: QF9700 (0x0FE6:0x9700) 已注册");
+
     return true;
 }
 

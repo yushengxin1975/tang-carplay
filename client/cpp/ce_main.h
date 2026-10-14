@@ -5,6 +5,7 @@
 // disabled (see #ifdef), so the TU compiles to nothing.
 
 #if defined(__MINGW32CE__) || defined(_WIN32_WCE)
+#  include <winsock2.h>
 #  include <windows.h>
 #  include "protocol/message.h"
 #  include "protocol/connection.h"
