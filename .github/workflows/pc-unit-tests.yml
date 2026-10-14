@@ -69,3 +69,59 @@ jobs:
             build/pc_main*
             test.log
           if-no-files-found: ignore
+
+  # PC-side box simulator rig: runs the REAL production CE transport code
+  # path (UsbTransport_CE + libBoxUSB load + trailing-byte strip fix +
+  # reader loop + Connection state machine + self-heal) against box_sim.exe
+  # over TCP — no head unit, no dongle, no WinCE emulator needed.
+  sim-pc:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install g++
+        shell: bash
+        run: choco install mingw -y || true
+      - name: Build box_sim + libBoxUSB_sim.dll + sim_main
+        shell: bash
+        run: |
+          CXX="C:/mingw64/bin/g++.exe"
+          [ -f "$CXX" ] || CXX="C:/ProgramData/chocolatey/lib/mingw/tools/install/bin/g++.exe"
+          [ -f "$CXX" ] || CXX="C:/msys64/mingw64/bin/g++.exe"
+          [ -f "$CXX" ] || CXX="g++"
+          echo "Using compiler: $CXX"
+          mkdir -p build/sim
+
+          # box_sim.exe — box-side protocol simulator (fault injection)
+          "$CXX" -std=c++17 -O2 -g -Wall \
+            -Iclient/include \
+            client/sim/box_sim.cpp \
+            -lws2_32 \
+            -o build/sim/box_sim.exe
+
+          # libBoxUSB.dll — libBoxUSB_sim.dll: drop-in vendor DLL replacement
+          # (TCP tunnel to box_sim; host_recv returns N+1 with trailing 0x20)
+          "$CXX" -std=c++17 -O2 -g -Wall -shared \
+            client/sim/libboxusb_sim.cpp \
+            -lws2_32 \
+            -o build/sim/libBoxUSB.dll
+
+          # sim_main.exe — production CE transport code path vs the sim
+          # (-DCARLINKIT_SIM_CE_TRANSPORT compiles the CE branch on desktop;
+          # -ladvapi32 for the Reg* calls in EnsureDriverInstalled)
+          "$CXX" -std=c++17 -O2 -g -Wall \
+            -DCARLINKIT_SIM_CE_TRANSPORT \
+            -Iclient/include -Iclient/cpp \
+            client/cpp/protocol/aes_sbox_data.cpp \
+            client/cpp/protocol/connection.cpp \
+            client/cpp/protocol/usb_transport.cpp \
+            client/sim/sim_main.cpp \
+            -lws2_32 -ladvapi32 -static \
+            -o build/sim/sim_main.exe
+          ls -la build/sim/
+      - name: Upload sim artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tang-carplay-pc-sim-${{ github.run_id }}
+          path: build/sim/
+          if-no-files-found: ignore

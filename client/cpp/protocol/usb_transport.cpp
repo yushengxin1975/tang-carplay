@@ -11,8 +11,13 @@
 #include <cstdio>
 #include <cstring>
 
-#if defined(__MINGW32CE__) || defined(_WIN32_WCE)
+#if defined(__MINGW32CE__) || defined(_WIN32_WCE) || defined(CARLINKIT_SIM_CE_TRANSPORT)
 // ==================== CE implementation ====================
+// CARLINKIT_SIM_CE_TRANSPORT: compile this branch for desktop MinGW so the
+// REAL production transport code (libBoxUSB load + trailing-byte strip fix
+// + reader loop) can be exercised on a PC against libBoxUSB_sim.dll /
+// box_sim.exe. The only CE-only APIs in this branch are ActivateDevice /
+// ActivateDeviceEx (driver pre-activation), guarded out below.
 
 #include <windows.h>
 
@@ -119,10 +124,12 @@ static bool EnsureDriverInstalled(const WCHAR *appDir) {
     regStr(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", L"Index", L"0");
     regStr(HKEY_LOCAL_MACHINE, L"Drivers\\BuiltIn\\Usb_Kernel_Wrapper", L"Order", L"0");
 
-    // 3. Pre-activate driver
+    // 3. Pre-activate driver (CE-only APIs; skipped in the desktop sim build)
+#ifndef CARLINKIT_SIM_CE_TRANSPORT
     ActivateDevice(L"Drivers\\BuiltIn\\Usb_Box", 0);
     ActivateDevice(L"Drivers\\USB\\ClientDrivers\\Usb_Box", 0);
     ActivateDeviceEx(L"Drivers\\BuiltIn\\Usb_Box", NULL, 0, 0);
+#endif
 
     return true;
 }
