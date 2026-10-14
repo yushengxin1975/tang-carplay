@@ -21,6 +21,18 @@
 
 #include <windows.h>
 
+#if defined(CARLINKIT_SIM_CE_TRANSPORT) && !defined(__MINGW32CE__) && !defined(_WIN32_WCE)
+// Desktop compile of the CE branch (simulator rig): desktop Windows has no
+// GetProcAddressW (CE-only export name) — map it to GetProcAddress with a
+// narrow-string conversion. Real WinCE builds are unaffected.
+#include <cstdint>
+static FARPROC GetProcAddressW(HMODULE mod, LPCWSTR name) {
+    char narrow[128];
+    _snprintf(narrow, sizeof(narrow), "%ls", name);
+    return GetProcAddress(mod, narrow);
+}
+#endif
+
 extern void PushEventW(const WCHAR *fmt, ...);
 
 namespace carlinkit {
@@ -228,10 +240,10 @@ void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
                                  INVALID_HANDLE_VALUE);
     if (hDriver != INVALID_HANDLE_VALUE) {
         impl_->drv = hDriver;
-        PushEventW(L"OK: CBX0: 直接打开成功 (0x%08X)", (DWORD)hDriver);
+        PushEventW(L"OK: CBX0: 直接打开成功 (0x%08X)", (DWORD)(uintptr_t)hDriver);
     } else {
         impl_->drv = impl_->Open();
-        PushEventW(L"UkwOpenDriver 打开结果: 0x%08X (e=%u)", (DWORD)impl_->drv, GetLastError());
+        PushEventW(L"UkwOpenDriver 打开结果: 0x%08X (e=%u)", (DWORD)(uintptr_t)impl_->drv, GetLastError());
     }
 
     if (!impl_->drv || impl_->drv == INVALID_HANDLE_VALUE) {

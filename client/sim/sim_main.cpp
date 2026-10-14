@@ -34,8 +34,8 @@
 
 #include <windows.h>
 
-#include "connection.h"
-#include "usb_transport.h"
+#include "protocol/connection.h"
+#include "protocol/usb_transport.h"
 
 #include <cstdio>
 #include <cstdarg>
