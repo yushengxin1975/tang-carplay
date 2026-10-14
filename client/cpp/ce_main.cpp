@@ -733,7 +733,7 @@ static DWORD WINAPI VideoDecodeThread(LPVOID) {
                     // large frame failing = real decoder problem).
                     static volatile LONG g_decode_fails = 0;
                     LONG fails = InterlockedIncrement(reinterpret_cast<volatile LONG *>(&g_decode_fails));
-                    if (fails <= 3 || (fails % 200) == 0) {
+                    if (fails <= 10 || (fails % 200) == 0) {
                         LogDebugW(L"[VID] decode_frame FAILED #%u: h264_len=%u (decoder_ready=%d)",
                                   (unsigned)fails, (unsigned)actual_len,
                                   g_decoder.is_ready() ? 1 : 0);
@@ -811,29 +811,39 @@ static DWORD WINAPI ClientThread(LPVOID) {
     cb.on_any = [](Cmd c, const uint8_t *p, std::size_t n) {
         if (c == Cmd::VIDEO_DATA) {
             InterlockedIncrement(reinterpret_cast<volatile LONG *>(&g_video_frames));
-            // Log the first 3 video payloads (size + first 8 bytes hex) so the
-            // carplay.log reveals what the box actually sends (H.264 NAL starts
-            // with 00 00 00 01; anything else means the stream is not H.264).
+            // Scan for Annex-B start code (00 00 00 01 or 00 00 01) in first 64 bytes
+            size_t nal_offset = 20; // Default Carlinkit subheader is 20 bytes
+            for (size_t i = 0; i + 4 <= n && i < 64; ++i) {
+                if (p[i] == 0 && p[i+1] == 0 && p[i+2] == 0 && p[i+3] == 1) {
+                    nal_offset = i;
+                    break;
+                }
+                if (p[i] == 0 && p[i+1] == 0 && p[i+2] == 1) {
+                    nal_offset = i;
+                    break;
+                }
+            }
             {
                 static volatile LONG g_vid_logged = 0;
                 LONG logged = InterlockedIncrement(reinterpret_cast<volatile LONG *>(&g_vid_logged));
                 if (logged <= 5) {
-                    unsigned b0 = (n > 0) ? p[0] : 0, b1 = (n > 1) ? p[1] : 0;
-                    unsigned b2 = (n > 2) ? p[2] : 0, b3 = (n > 3) ? p[3] : 0;
-                    const uint8_t *h = (n > 20) ? (p + 20) : nullptr;
-                    size_t hlen = (n > 20) ? (n - 20) : 0;
-                    unsigned h0 = (hlen > 0) ? h[0] : 0, h1 = (hlen > 1) ? h[1] : 0;
-                    unsigned h2 = (hlen > 2) ? h[2] : 0, h3 = (hlen > 3) ? h[3] : 0;
-                    unsigned h4 = (hlen > 4) ? h[4] : 0, h5 = (hlen > 5) ? h[5] : 0;
-                    LogDebugW(L"[VID] video payload #%u: len=%u subhdr=%02X %02X %02X %02X h264=%02X %02X %02X %02X %02X %02X",
-                              (unsigned)logged, (unsigned)n, b0, b1, b2, b3, h0, h1, h2, h3, h4, h5);
+                    unsigned b0 = (n > 0)?p[0]:0, b1 = (n > 1)?p[1]:0, b2 = (n > 2)?p[2]:0, b3 = (n > 3)?p[3]:0;
+                    unsigned b4 = (n > 4)?p[4]:0, b5 = (n > 5)?p[5]:0, b6 = (n > 6)?p[6]:0, b7 = (n > 7)?p[7]:0;
+                    const uint8_t *h = (n > nal_offset) ? (p + nal_offset) : nullptr;
+                    size_t hlen = (n > nal_offset) ? (n - nal_offset) : 0;
+                    unsigned h0 = (hlen > 0)?h[0]:0, h1 = (hlen > 1)?h[1]:0, h2 = (hlen > 2)?h[2]:0, h3 = (hlen > 3)?h[3]:0;
+                    unsigned h4 = (hlen > 4)?h[4]:0, h5 = (hlen > 5)?h[5]:0;
+                    LogDebugW(L"[VID] video payload #%u: len=%u nal_off=%u head8=%02X %02X %02X %02X %02X %02X %02X %02X nalu=%02X %02X %02X %02X %02X %02X",
+                              (unsigned)logged, (unsigned)n, (unsigned)nal_offset,
+                              b0, b1, b2, b3, b4, b5, b6, b7,
+                              h0, h1, h2, h3, h4, h5);
                 }
             }
-            if (n > 20) {
+            if (n > nal_offset) {
                 EnterCriticalSection(&g_vid_cs);
-                const size_t h264_sz = n - 20;
+                const size_t h264_sz = n - nal_offset;
                 g_pending_video.resize(h264_sz + 64);
-                std::memcpy(g_pending_video.data(), p + 20, h264_sz);
+                std::memcpy(g_pending_video.data(), p + nal_offset, h264_sz);
                 std::memset(g_pending_video.data() + h264_sz, 0, 64);
                 g_has_pending_video = TRUE;
                 LeaveCriticalSection(&g_vid_cs);

@@ -46,6 +46,9 @@ public:
         p_avcodec_decode_video2 = (PFN_avcodec_decode_video2)GetProcAddressW(hAvcodec_, L"avcodec_decode_video2");
         p_avcodec_close = (PFN_avcodec_close)GetProcAddressW(hAvcodec_, L"avcodec_close");
         p_av_init_packet = (PFN_av_init_packet)GetProcAddressW(hAvcodec_, L"av_init_packet");
+        p_av_parser_init = (PFN_av_parser_init)GetProcAddressW(hAvcodec_, L"av_parser_init");
+        p_av_parser_parse2 = (PFN_av_parser_parse2)GetProcAddressW(hAvcodec_, L"av_parser_parse2");
+        p_av_parser_close = (PFN_av_parser_close)GetProcAddressW(hAvcodec_, L"av_parser_close");
 
         p_av_frame_alloc = (PFN_av_frame_alloc)GetProcAddressW(hAvutil_, L"av_frame_alloc");
         p_av_frame_free = (PFN_av_frame_free)GetProcAddressW(hAvutil_, L"av_frame_free");
@@ -87,6 +90,10 @@ public:
             return false;
         }
 
+        if (p_av_parser_init) {
+            parser_ = p_av_parser_init(27); // AV_CODEC_ID_H264
+        }
+
         frame_ = p_av_frame_alloc();
         if (!frame_) {
             close();
@@ -104,20 +111,67 @@ public:
                       int *out_w = nullptr, int *out_h = nullptr, bool flip_vertical = false) {
         if (!ready_ || !h264 || len == 0 || !out_rgb565 || !codec_ctx_ || !frame_) return false;
 
-        // Guaranteed 8-byte aligned packet structure to prevent ARM LDM/LDRD alignment exceptions
+        bool got_frame = false;
         struct alignas(8) AlignedPkt {
             uint8_t bytes[128];
         } pkt;
-        std::memset(&pkt, 0, sizeof(pkt));
-        p_av_init_packet(&pkt);
-        *reinterpret_cast<uint8_t**>(pkt.bytes + 0x18) = const_cast<uint8_t*>(h264);
-        *reinterpret_cast<int*>(pkt.bytes + 0x1C) = static_cast<int>(len);
 
-        int got_picture = 0;
-        int ret = p_avcodec_decode_video2(codec_ctx_, frame_, &got_picture, &pkt);
-        if (ret < 0 || !got_picture) {
-            return false;
+        // Method A: Feed H.264 stream through av_parser_parse2 to split SPS/PPS/IDR packets
+        if (parser_ && p_av_parser_parse2) {
+            const uint8_t *cur_ptr = h264;
+            int cur_size = static_cast<int>(len);
+
+            while (cur_size > 0) {
+                uint8_t *pout = nullptr;
+                int pout_size = 0;
+                int parsed = p_av_parser_parse2(parser_, codec_ctx_,
+                                                &pout, &pout_size,
+                                                cur_ptr, cur_size,
+                                                static_cast<int64_t>(0x8000000000000000ULL),
+                                                static_cast<int64_t>(0x8000000000000000ULL), 0);
+                if (parsed < 0) break;
+                cur_ptr += parsed;
+                cur_size -= parsed;
+
+                if (pout_size > 0 && pout) {
+                    std::memset(&pkt, 0, sizeof(pkt));
+                    p_av_init_packet(&pkt);
+                    *reinterpret_cast<uint8_t**>(pkt.bytes + 0x18) = pout;
+                    *reinterpret_cast<int*>(pkt.bytes + 0x1C) = pout_size;
+
+                    int got_picture = 0;
+                    int ret = p_avcodec_decode_video2(codec_ctx_, frame_, &got_picture, &pkt);
+                    if (ret >= 0 && got_picture) {
+                        got_frame = true;
+                        break;
+                    }
+                }
+            }
         }
+
+        // Method B: Loop consuming chunks directly if parser not used or didn't produce frame
+        if (!got_frame) {
+            const uint8_t *cur_ptr = h264;
+            int cur_size = static_cast<int>(len);
+            while (cur_size > 0) {
+                std::memset(&pkt, 0, sizeof(pkt));
+                p_av_init_packet(&pkt);
+                *reinterpret_cast<uint8_t**>(pkt.bytes + 0x18) = const_cast<uint8_t*>(cur_ptr);
+                *reinterpret_cast<int*>(pkt.bytes + 0x1C) = cur_size;
+
+                int got_picture = 0;
+                int ret = p_avcodec_decode_video2(codec_ctx_, frame_, &got_picture, &pkt);
+                if (ret <= 0) break;
+                cur_ptr += ret;
+                cur_size -= ret;
+                if (got_picture) {
+                    got_frame = true;
+                    break;
+                }
+            }
+        }
+
+        if (!got_frame) return false;
 
         uint8_t **srcData = reinterpret_cast<uint8_t**>(frame_);
         int *srcStride = reinterpret_cast<int*>(reinterpret_cast<char*>(frame_) + 0x20);
@@ -182,6 +236,10 @@ public:
             p_av_frame_free(&frame_);
             frame_ = nullptr;
         }
+        if (parser_ && p_av_parser_close) {
+            p_av_parser_close(parser_);
+            parser_ = nullptr;
+        }
         if (codec_ctx_ && p_avcodec_close) {
             p_avcodec_close(codec_ctx_);
             codec_ctx_ = nullptr;
@@ -243,6 +301,13 @@ private:
     typedef int (*PFN_avcodec_decode_video2)(void *avctx, void *picture, int *got_picture_ptr, const void *avpkt);
     typedef int (*PFN_avcodec_close)(void *avctx);
     typedef void (*PFN_av_init_packet)(void *pkt);
+    typedef void* (*PFN_av_parser_init)(int codec_id);
+    typedef int (*PFN_av_parser_parse2)(void *s, void *avctx,
+                                        uint8_t **poutbuf, int *poutbuf_size,
+                                        const uint8_t *buf, int buf_size,
+                                        int64_t pts, int64_t dts,
+                                        int64_t pos);
+    typedef void (*PFN_av_parser_close)(void *s);
 
     typedef void* (*PFN_av_frame_alloc)(void);
     typedef void (*PFN_av_frame_free)(void **frame);
@@ -268,6 +333,9 @@ private:
     PFN_avcodec_decode_video2 p_avcodec_decode_video2 = nullptr;
     PFN_avcodec_close p_avcodec_close = nullptr;
     PFN_av_init_packet p_av_init_packet = nullptr;
+    PFN_av_parser_init p_av_parser_init = nullptr;
+    PFN_av_parser_parse2 p_av_parser_parse2 = nullptr;
+    PFN_av_parser_close p_av_parser_close = nullptr;
 
     PFN_av_frame_alloc p_av_frame_alloc = nullptr;
     PFN_av_frame_free p_av_frame_free = nullptr;
@@ -278,6 +346,7 @@ private:
     PFN_sws_freeContext p_sws_freeContext = nullptr;
 
     void *codec_ctx_ = nullptr;
+    void *parser_ = nullptr;
     void *frame_ = nullptr;
     void *sws_ctx_ = nullptr;
     int sws_w_ = 0;
