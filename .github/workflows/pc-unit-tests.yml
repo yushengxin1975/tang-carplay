@@ -92,17 +92,21 @@ jobs:
           mkdir -p build/sim
 
           # box_sim.exe — box-side protocol simulator (fault injection)
+          # (-static: embed the C++ runtime — end-user PCs have no
+          #  libstdc++-6.dll in PATH, a dynamic build dies with err=126)
           "$CXX" -std=c++17 -O2 -g -Wall \
             -Iclient/include \
             client/sim/box_sim.cpp \
-            -lws2_32 \
+            -lws2_32 -static \
             -o build/sim/box_sim.exe
 
           # libBoxUSB.dll — libBoxUSB_sim.dll: drop-in vendor DLL replacement
           # (TCP tunnel to box_sim; host_recv returns N+1 with trailing 0x20)
+          # (-static-libstdc++/-libgcc: same reason — the DLL must load on
+          #  machines without the MinGW runtime)
           "$CXX" -std=c++17 -O2 -g -Wall -shared \
             client/sim/libboxusb_sim.cpp \
-            -lws2_32 \
+            -lws2_32 -static-libstdc++ -static-libgcc \
             -o build/sim/libBoxUSB.dll
 
           # sim_main.exe — production CE transport code path vs the sim
