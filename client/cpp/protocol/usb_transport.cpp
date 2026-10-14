@@ -192,9 +192,10 @@ void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
                 PushEventW(L"OK: libBoxUSB 握手成功 (0x1314:0x1520)");
                 return;
             } else {
-                PushEventW(L"libBoxUSB init 6次重试均失败 (最后 %d)，启用原生驱动", hrc);
+                PushEventW(L"libBoxUSB init 未检测到盒子 (最后 %d)，保持重试...", hrc);
                 FreeLibrary(bMod);
                 bMod = nullptr;
+                throw std::runtime_error("libBoxUSB: 盒子未插入或未就绪 (0x1314:0x1520)");
             }
         }
     }
@@ -329,41 +330,21 @@ void UsbTransport_CE::submitRead(std::size_t buf_size, RecvCallback cb) {
                     int rx = im->host_recv(buf.data(), static_cast<int>(buf.size()), 100);
                     if (rx > 0 && im->recv) {
                         ++ok_reads;
-                        // libBoxUSB host_recv returns [N data bytes][1 trailing
-                        // status byte]. Evidence (carplay.log 07:50 session):
-                        // every 17-byte read starts with the FULL magic
-                        // AA 55 AA 55 at offset 0 — there is NO prefix byte —
-                        // and the header declaring len=11532 was followed by a
-                        // read of exactly 11533 = 11532 + 1 bytes. The stray
-                        // byte sits at the END (0x20 on header reads: the old
-                        // no-strip STATE payload was 0xAA55AA20 =
-                        // [0x20][AA 55 AA], i.e. trailing byte + next header's
-                        // first 3 bytes).
-                        // The previous "strip prefix" fix deleted the magic's
-                        // first byte, so the parser never found AA 55 AA 55
-                        // again — zero messages parsed, no PLUGGED, no
-                        // heartbeat replies, and the box tore the session down
-                        // ~40s in. Fix: strip the LAST byte instead.
-                        int plen = rx - 1;   // drop trailing status byte
-                        if (plen > 0) {
-                            // Diagnostic: first 8 + last 2 bytes of the first
-                            // 10 reads — head must start with the magic
-                            // (AA 55 AA 55), tail shows the stripped byte.
-                            if (ok_reads <= 10) {
-                                unsigned b0 = buf[0], b1 = (rx>1)?buf[1]:0;
-                                unsigned b2 = (rx>2)?buf[2]:0, b3 = (rx>3)?buf[3]:0;
-                                unsigned b4 = (rx>4)?buf[4]:0, b5 = (rx>5)?buf[5]:0;
-                                unsigned b6 = (rx>6)?buf[6]:0, b7 = (rx>7)?buf[7]:0;
-                                PushEventW(L"读[libBoxUSB] #%u: %d 字节 "
-                                           L"head=%02X %02X %02X %02X %02X %02X %02X %02X "
-                                           L"tail=%02X %02X",
-                                           (unsigned)ok_reads, rx,
-                                           b0,b1,b2,b3,b4,b5,b6,b7,
-                                           (unsigned)buf[rx-2], (unsigned)buf[rx-1]);
-                            }
-                            empty_reads = 0;
-                            im->recv(buf.data(), static_cast<std::size_t>(plen));
+                        // Diagnostic: first 8 bytes of the first 10 reads.
+                        // libBoxUSB host_recv returns pure, unmodified USB bulk transfer data
+                        // (proven by disassembling host_recv -> libusb_bulk_transfer).
+                        if (ok_reads <= 10) {
+                            unsigned b0 = buf[0], b1 = (rx>1)?buf[1]:0;
+                            unsigned b2 = (rx>2)?buf[2]:0, b3 = (rx>3)?buf[3]:0;
+                            unsigned b4 = (rx>4)?buf[4]:0, b5 = (rx>5)?buf[5]:0;
+                            unsigned b6 = (rx>6)?buf[6]:0, b7 = (rx>7)?buf[7]:0;
+                            PushEventW(L"读[libBoxUSB] #%u: %d 字节 "
+                                       L"head=%02X %02X %02X %02X %02X %02X %02X %02X",
+                                       (unsigned)ok_reads, rx,
+                                       b0,b1,b2,b3,b4,b5,b6,b7);
                         }
+                        empty_reads = 0;
+                        im->recv(buf.data(), static_cast<std::size_t>(rx));
                     } else {
                         ++empty_reads;
                         // After 100 consecutive empty reads (~10s), log once per 500 more
@@ -434,7 +415,9 @@ void UsbTransport_CE::write(const uint8_t *data, std::size_t len) {
                               const_cast<uint8_t *>(data), static_cast<DWORD>(len),
                               &tx, nullptr);
     if (!ok) {
-        PushEventW(L"写[UKW]失败: len=%u e=%u", (unsigned)len, GetLastError());
+        DWORD err = GetLastError();
+        PushEventW(L"写[UKW]失败: len=%u e=%u", (unsigned)len, err);
+        if (error_cb_) error_cb_(static_cast<int>(err));
     }
 }
 

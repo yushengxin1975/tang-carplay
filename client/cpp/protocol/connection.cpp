@@ -158,27 +158,41 @@ void Connection::onRecv(const uint8_t *data, std::size_t len) {
     rx_buf_.insert(rx_buf_.end(), data, data + len);
 
     while (rx_buf_.size() >= sizeof(Header)) {
-        // Fast-forward to next valid magic if stream gets out of sync
-        uint32_t magic = 0;
-        std::memcpy(&magic, rx_buf_.data(), sizeof(uint32_t));
-        if (magic != MAGIC && magic != MAGIC_ENC) {
-            std::size_t sync_off = 1;
-            while (sync_off + 4 <= rx_buf_.size()) {
-                uint32_t m = 0;
-                std::memcpy(&m, rx_buf_.data() + sync_off, sizeof(uint32_t));
-                if (m == MAGIC || m == MAGIC_ENC) break;
-                sync_off++;
-            }
-            std::fprintf(stderr, "[USB-IN] lost sync, dropped %zu bytes\n", sync_off);
-            rx_buf_.erase(rx_buf_.begin(), rx_buf_.begin() + sync_off);
-            continue;
-        }
-
         Header h;
         std::memcpy(&h, rx_buf_.data(), sizeof(Header));
-        if (h.length < 0 || static_cast<uint32_t>(h.length) > MESSAGE_MAX_PAYLOAD) {
-            std::fprintf(stderr, "[USB-IN] invalid length %d, dropping header\n", h.length);
-            rx_buf_.erase(rx_buf_.begin(), rx_buf_.begin() + sizeof(Header));
+
+        // Strict header validation:
+        // 1. Magic must match MAGIC (plain) or MAGIC_ENC (encrypted)
+        // 2. typecheck MUST equal ~type (Carlinkit protocol checksum)
+        // 3. length must be non-negative and <= MESSAGE_MAX_PAYLOAD
+        bool valid_magic = (h.magic == MAGIC || h.magic == MAGIC_ENC);
+        bool valid_checksum = (h.typecheck == ~h.type);
+        bool valid_len = (h.length >= 0 && static_cast<uint32_t>(h.length) <= MESSAGE_MAX_PAYLOAD);
+
+        if (!valid_magic || !valid_checksum || !valid_len) {
+            std::size_t sync_off = 1;
+            while (sync_off + sizeof(Header) <= rx_buf_.size()) {
+                Header candidate;
+                std::memcpy(&candidate, rx_buf_.data() + sync_off, sizeof(Header));
+                if ((candidate.magic == MAGIC || candidate.magic == MAGIC_ENC) &&
+                    (candidate.typecheck == ~candidate.type) &&
+                    (candidate.length >= 0 && static_cast<uint32_t>(candidate.length) <= MESSAGE_MAX_PAYLOAD)) {
+                    break;
+                }
+                sync_off++;
+            }
+            if (sync_off + sizeof(Header) > rx_buf_.size()) {
+                // Not enough bytes remaining in buffer to confirm a valid header.
+                // Keep the trailing tail (up to sizeof(Header) - 1 bytes) and wait for more data.
+                std::size_t keep = std::min(rx_buf_.size(), sizeof(Header) - 1);
+                if (rx_buf_.size() > keep) {
+                    std::fprintf(stderr, "[USB-IN] lost sync, dropped %zu bytes\n", rx_buf_.size() - keep);
+                    rx_buf_.erase(rx_buf_.begin(), rx_buf_.end() - keep);
+                }
+                break;
+            }
+            std::fprintf(stderr, "[USB-IN] resynced, dropped %zu bytes\n", sync_off);
+            rx_buf_.erase(rx_buf_.begin(), rx_buf_.begin() + sync_off);
             continue;
         }
 

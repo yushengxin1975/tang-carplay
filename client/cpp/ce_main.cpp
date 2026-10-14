@@ -817,13 +817,16 @@ static DWORD WINAPI ClientThread(LPVOID) {
             {
                 static volatile LONG g_vid_logged = 0;
                 LONG logged = InterlockedIncrement(reinterpret_cast<volatile LONG *>(&g_vid_logged));
-                if (logged <= 3) {
+                if (logged <= 5) {
                     unsigned b0 = (n > 0) ? p[0] : 0, b1 = (n > 1) ? p[1] : 0;
                     unsigned b2 = (n > 2) ? p[2] : 0, b3 = (n > 3) ? p[3] : 0;
-                    unsigned b4 = (n > 4) ? p[4] : 0, b5 = (n > 5) ? p[5] : 0;
-                    unsigned b6 = (n > 6) ? p[6] : 0, b7 = (n > 7) ? p[7] : 0;
-                    LogDebugW(L"[VID] video payload #%u: len=%u bytes=%02X %02X %02X %02X %02X %02X %02X %02X",
-                              (unsigned)logged, (unsigned)n, b0, b1, b2, b3, b4, b5, b6, b7);
+                    const uint8_t *h = (n > 20) ? (p + 20) : nullptr;
+                    size_t hlen = (n > 20) ? (n - 20) : 0;
+                    unsigned h0 = (hlen > 0) ? h[0] : 0, h1 = (hlen > 1) ? h[1] : 0;
+                    unsigned h2 = (hlen > 2) ? h[2] : 0, h3 = (hlen > 3) ? h[3] : 0;
+                    unsigned h4 = (hlen > 4) ? h[4] : 0, h5 = (hlen > 5) ? h[5] : 0;
+                    LogDebugW(L"[VID] video payload #%u: len=%u subhdr=%02X %02X %02X %02X h264=%02X %02X %02X %02X %02X %02X",
+                              (unsigned)logged, (unsigned)n, b0, b1, b2, b3, h0, h1, h2, h3, h4, h5);
                 }
             }
             if (n > 20) {

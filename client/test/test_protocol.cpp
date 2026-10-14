@@ -304,6 +304,68 @@ static void test_wave_player() {
     EXPECT(!player.is_open(), "closed ok");
 }
 
+// --- 5. Stream framing & checksum-verified resynchronization test ---
+static void test_stream_framing_resync() {
+    std::printf("[test_stream_framing_resync]\n");
+    int received_count = 0;
+    Cmd last_cmd = static_cast<Cmd>(0);
+    std::vector<uint8_t> last_payload;
+
+    InboundCallbacks cb;
+    cb.on_any = [&](Cmd c, const uint8_t *p, std::size_t n) {
+        received_count++;
+        last_cmd = c;
+        if (p && n > 0) last_payload.assign(p, p + n);
+        else last_payload.clear();
+    };
+
+    auto owned = std::make_unique<FakeTransport>();
+    FakeTransport *ftp = owned.get();
+    Connection conn(std::move(owned), cb);
+    conn.start();
+
+    // 1. Fragmented delivery: a 24-byte message (16B header + 8B payload)
+    // delivered in weird chunks (5 bytes, 7 bytes, 12 bytes).
+    std::vector<uint8_t> payload = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22};
+    Message m(Cmd::VIDEO_DATA, false, static_cast<int>(payload.size()), payload.data());
+    auto serialized = m.serialize();
+    EXPECT(serialized.size() == 24, "serialized size == 24");
+
+    std::vector<uint8_t> chunk1(serialized.begin(), serialized.begin() + 5);
+    std::vector<uint8_t> chunk2(serialized.begin() + 5, serialized.begin() + 12);
+    std::vector<uint8_t> chunk3(serialized.begin() + 12, serialized.end());
+
+    ftp->deliver(chunk1);
+    EXPECT(received_count == 0, "no message dispatched on partial chunk 1");
+    ftp->deliver(chunk2);
+    EXPECT(received_count == 0, "no message dispatched on partial chunk 2");
+    ftp->deliver(chunk3);
+    EXPECT(received_count == 1, "message dispatched when 3rd chunk completes frame");
+    EXPECT(last_cmd == Cmd::VIDEO_DATA, "cmd preserved across chunks");
+    EXPECT(last_payload == payload, "payload exactly preserved across chunks");
+
+    // 2. False magic rejection & resync test:
+    // Send noise, then FALSE magic (AA 55 AA 55) with invalid checksum, then authentic message.
+    std::vector<uint8_t> noise = {0x99, 0x88, 0x77};
+    std::vector<uint8_t> false_hdr(16, 0);
+    Message::write_u32_le(false_hdr.data(), MAGIC);
+    Message::write_u32_le(false_hdr.data() + 4, 10);
+    Message::write_u32_le(false_hdr.data() + 8, 6);
+    Message::write_u32_le(false_hdr.data() + 12, 0x12345678); // NOT ~6!
+
+    Message m_real(Cmd::HEARTBEAT, false, 0, nullptr);
+    auto real_bytes = m_real.serialize();
+
+    std::vector<uint8_t> stream;
+    stream.insert(stream.end(), noise.begin(), noise.end());
+    stream.insert(stream.end(), false_hdr.begin(), false_hdr.end());
+    stream.insert(stream.end(), real_bytes.begin(), real_bytes.end());
+
+    ftp->deliver(stream);
+    EXPECT(last_cmd == Cmd::HEARTBEAT, "false magic rejected and resynced to authentic message");
+    conn.stop();
+}
+
 int main() {
     std::printf("=== Carlinkit protocol unit tests ===\n");
     test_aes_roundtrip();
@@ -316,6 +378,7 @@ int main() {
     test_connection_encrypted();
     test_lifecycle();
     test_wave_player();
+    test_stream_framing_resync();
     std::printf("=== %d passed, %d failed ===\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;
 }
