@@ -75,9 +75,10 @@ struct UsbTransport_CE::Impl {
     void *dev = nullptr;
     bool claimed = false;          // interface 0 claimed (idempotent claim)
     int write_count = 0;           // per-connection write sequence counter
+    UsbTransport_CE *parent = nullptr;
 };
 
-UsbTransport_CE::UsbTransport_CE() : impl_(new Impl) {}
+UsbTransport_CE::UsbTransport_CE() : impl_(new Impl) { impl_->parent = this; }
 UsbTransport_CE::~UsbTransport_CE() { close(); delete impl_; }
 
 static bool EnsureDriverInstalled(const WCHAR *appDir) {
@@ -390,7 +391,7 @@ void UsbTransport_CE::submitRead(std::size_t buf_size, RecvCallback cb) {
                         if (empty_reads >= 150 && ok_reads == 0) {
                             PushEventW(L"警告: 启动后连续 %u 次空读(零响应)，判定端点假死，触发自愈重连...",
                                        (unsigned)empty_reads);
-                            if (error_cb_) error_cb_(-999);
+                            if (im->parent && im->parent->error_cb_) im->parent->error_cb_(-999);
                             empty_reads = 0; // prevent repeated triggers
                         }
                         Sleep(10);
