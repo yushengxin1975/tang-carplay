@@ -45,6 +45,10 @@
 #ifdef _WIN32
 #  include <winsock2.h>
 #  include <ws2tcpip.h>
+typedef SOCKET socket_t;
+#  ifndef INADDR_LOOPBACK   // older mingw.org headers lack it
+#    define INADDR_LOOPBACK 0x7f000001u
+#  endif
 #else
 #  include <sys/socket.h>
 #  include <netinet/in.h>
