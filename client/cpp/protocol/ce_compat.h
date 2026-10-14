@@ -12,7 +12,13 @@
 #else
 #  define CARLINKIT_PLATFORM_CE 0
 #  include <mutex>
-#  ifndef _WIN32
+#  ifdef _WIN32
+     // Desktop MinGW/MSVC: declare Sleep without pulling in all of
+     // <windows.h> (avoids min/max macro pollution). Same signature as
+     // winbase.h, so it is a compatible redeclaration if windows.h was
+     // already included by another header in the same TU.
+     extern "C" __declspec(dllimport) void __stdcall Sleep(unsigned long ms);
+#  else
 #    include <unistd.h>
      // Win32-style Sleep(ms) shim so sendInit's inter-message delays
      // compile on POSIX hosts (PC unit-test build on Linux CI).
