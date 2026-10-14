@@ -12,6 +12,12 @@
 #else
 #  define CARLINKIT_PLATFORM_CE 0
 #  include <mutex>
+#  ifndef _WIN32
+#    include <unistd.h>
+     // Win32-style Sleep(ms) shim so sendInit's inter-message delays
+     // compile on POSIX hosts (PC unit-test build on Linux CI).
+     inline void Sleep(unsigned int ms) { usleep(ms * 1000U); }
+#  endif
 #endif
 
 namespace carlinkit {
