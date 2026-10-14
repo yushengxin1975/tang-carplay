@@ -60,6 +60,11 @@ public:
     // Optional: set error callback. Default: ignored.
     void setErrorCallback(ErrorCallback cb) { error_cb_ = std::move(cb); }
 
+    // Current error callback. Connection::start() chains its own handler
+    // onto this instead of clobbering it — the app-level callback counts
+    // consecutive write failures to drive the self-heal reconnect.
+    ErrorCallback errorCallback() const { return error_cb_; }
+
 protected:
     ErrorCallback error_cb_;
 };

@@ -15,7 +15,15 @@ void Connection::start() {
         transport_->close();
         throw std::runtime_error("Connection: claim failed");
     }
-    transport_->setErrorCallback([this](int err) {
+    // Chain onto any app-level error callback instead of replacing it.
+    // ce_main sets a callback that counts consecutive write failures to
+    // drive the self-heal reconnect; clobbering it here (old behavior)
+    // meant g_write_failures never incremented and a dead box link looped
+    // on write errors forever (carplay.log 07:50 session: 70+ write
+    // failures, zero self-heal attempts, until the user clicked EXIT).
+    auto app_cb = transport_->errorCallback();
+    transport_->setErrorCallback([this, app_cb](int err) {
+        if (app_cb) app_cb(err);
         // Surface as state ERROR + fire on_state (best-effort).
         {
             LockGuard lock(mtx_);
