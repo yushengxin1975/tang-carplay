@@ -102,13 +102,13 @@ jobs:
 
           # libBoxUSB.dll — libBoxUSB_sim.dll: drop-in vendor DLL replacement
           # (TCP tunnel to box_sim; host_recv returns N+1 with trailing 0x20)
-          # (-static-libstdc++/-libgcc + static winpthread: the DLL must load
-          #  on machines without the MinGW runtime — libwinpthread-1.dll is
-          #  not in PATH either)
+          # (-static with -shared: embed libstdc++/libgcc/winpthread — the
+          #  DLL must load on machines without the MinGW runtime;
+          #  libwinpthread-1.dll is not in PATH either. Note: -Wl,-Bstatic
+          #  alone loses to libstdc++'s late winpthread resolution.)
           "$CXX" -std=c++17 -O2 -g -Wall -shared \
             client/sim/libboxusb_sim.cpp \
-            -lws2_32 -static-libstdc++ -static-libgcc \
-            -Wl,-Bstatic,-lwinpthread,-Bdynamic \
+            -lws2_32 -static \
             -o build/sim/libBoxUSB.dll
 
           # sim_main.exe — production CE transport code path vs the sim
