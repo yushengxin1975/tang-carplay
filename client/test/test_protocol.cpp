@@ -285,7 +285,7 @@ static void test_wave_player() {
     EXPECT(player.channels() == 2, "channels recorded");
     EXPECT(player.is_open(), "is_open after open");
 
-    EXPECT(player.get_volume() == 100, "default volume 100%");
+    EXPECT(player.get_volume() == 50, "default volume 50% (b95cd77: avoid startup pop)");
     player.set_volume(75);
     EXPECT(player.get_volume() == 75, "volume changed to 75%");
     player.set_volume(160);
