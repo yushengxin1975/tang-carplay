@@ -1,16 +1,18 @@
-#pragma once
-// Carlinkit protocol constants - FIPS-197 + FastCarPlay-derived.
-// Wrapped in namespace carlinkit so callers can use carlinkit::Cmd etc.
-
-namespace carlinkit {
-
-#pragma once
-// Carlinkit CPC2000/CP2A protocol constants
-// Sourced from niellun/FastCarPlay (C++) + AutoKit_WinCE reverse
 #ifndef CARLINKIT_PROTOCOL_CONST_H
 #define CARLINKIT_PROTOCOL_CONST_H
 
+// Carlinkit CPC2000/CP2A protocol constants
+// Sourced from niellun/FastCarPlay (C++) + AutoKit_WinCE reverse
+//
+// NOTE: the include guard and <cstdint> MUST stay OUTSIDE the namespace.
+// The previous layout had #include <cstdint> nested inside
+// `namespace carlinkit { }`, so any TU that included this header before the
+// std headers dragged corecrt.h's declarations into the namespace
+// ('carlinkit::size_t') and broke <string>/<memory> compilation.
+
 #include <cstdint>
+
+namespace carlinkit {
 
 // Connection state (Box status)
 constexpr int32_t PROTOCOL_STATUS_UNKNOWN       = -1;
@@ -87,5 +89,6 @@ constexpr uint8_t EP_OUT_BULK  = 0x01;   // PC -> Box
 constexpr uint8_t EP_IN_BULK   = 0x81;   // Box -> PC
 constexpr uint8_t EP_IN_INT     = 0x83;   // Box -> PC, interrupt (heartbeat)
 
-#endif // CARLINKIT_PROTOCOL_CONST_H
 } // namespace carlinkit
+
+#endif // CARLINKIT_PROTOCOL_CONST_H
