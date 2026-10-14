@@ -74,6 +74,7 @@ struct UsbTransport_CE::Impl {
 
     void *dev = nullptr;
     bool claimed = false;          // interface 0 claimed (idempotent claim)
+    int write_count = 0;           // per-connection write sequence counter
 };
 
 UsbTransport_CE::UsbTransport_CE() : impl_(new Impl) {}
@@ -357,27 +358,40 @@ void UsbTransport_CE::submitRead(std::size_t buf_size, RecvCallback cb) {
                     int rx = im->host_recv(buf.data(), static_cast<int>(buf.size()), 100);
                     if (rx > 0 && im->recv) {
                         ++ok_reads;
-                        // Diagnostic: first 8 bytes of the first 10 reads.
-                        // libBoxUSB host_recv returns pure, unmodified USB bulk transfer data
-                        // (proven by disassembling host_recv -> libusb_bulk_transfer).
+                        int plen = rx;
+                        // On Windows CE, the vendor libBoxUSB.dll (via CEUSBBOX.dll kernel driver)
+                        // appends a 1-byte completion status (0x20 = USBD_STATUS_SUCCESS) to
+                        // every bulk IN transfer and returns actual_length + 1.
+                        // Stripping this trailing byte restores exact protocol framing.
+                        if (im->use_box_lib && plen > 1 && buf[plen - 1] == 0x20) {
+                            plen--;
+                        }
                         if (ok_reads <= 10) {
                             unsigned b0 = buf[0], b1 = (rx>1)?buf[1]:0;
                             unsigned b2 = (rx>2)?buf[2]:0, b3 = (rx>3)?buf[3]:0;
                             unsigned b4 = (rx>4)?buf[4]:0, b5 = (rx>5)?buf[5]:0;
                             unsigned b6 = (rx>6)?buf[6]:0, b7 = (rx>7)?buf[7]:0;
-                            PushEventW(L"读[libBoxUSB] #%u: %d 字节 "
-                                       L"head=%02X %02X %02X %02X %02X %02X %02X %02X",
-                                       (unsigned)ok_reads, rx,
-                                       b0,b1,b2,b3,b4,b5,b6,b7);
+                            unsigned tail = (rx > 0) ? buf[rx - 1] : 0;
+                            PushEventW(L"读[libBoxUSB] #%u: %d字节(有效%d) head=%02X %02X %02X %02X %02X %02X %02X %02X tail=%02X",
+                                       (unsigned)ok_reads, rx, plen,
+                                       b0,b1,b2,b3,b4,b5,b6,b7, tail);
                         }
                         empty_reads = 0;
-                        im->recv(buf.data(), static_cast<std::size_t>(rx));
+                        im->recv(buf.data(), static_cast<std::size_t>(plen));
                     } else {
                         ++empty_reads;
                         // After 100 consecutive empty reads (~10s), log once per 500 more
                         if (empty_reads == 100 || (empty_reads > 100 && (empty_reads % 500) == 0)) {
                             PushEventW(L"读[libBoxUSB] 空读 x%u (累计成功 %u 次)",
                                        (unsigned)empty_reads, (unsigned)ok_reads);
+                        }
+                        // Watchdog: If 150 consecutive empty reads (~15s) occur with ZERO successful reads,
+                        // the box USB endpoint is in a zombie stall — trigger error callback to auto-reconnect!
+                        if (empty_reads >= 150 && ok_reads == 0) {
+                            PushEventW(L"警告: 启动后连续 %u 次空读(零响应)，判定端点假死，触发自愈重连...",
+                                       (unsigned)empty_reads);
+                            if (error_cb_) error_cb_(-999);
+                            empty_reads = 0; // prevent repeated triggers
                         }
                         Sleep(10);
                     }
@@ -411,13 +425,11 @@ void UsbTransport_CE::submitRead(std::size_t buf_size, RecvCallback cb) {
 }
 
 void UsbTransport_CE::write(const uint8_t *data, std::size_t len) {
-    static int s_write_count = 0;
     if (impl_->use_box_lib && impl_->host_send) {
         int tx = impl_->host_send(const_cast<uint8_t *>(data), static_cast<int>(len), 3000);
-        // Log first 40 writes (covers sendInit + initial heartbeats) to
-        // carplay.log on TF card — shows exactly which message fails.
-        if (s_write_count < 40) {
-            ++s_write_count;
+        impl_->write_count++;
+        // Log first 30 writes of each session, or any failed write
+        if (impl_->write_count <= 30 || tx <= 0) {
             uint32_t magic = 0, cmd = 0;
             if (len >= 8) {
                 magic = static_cast<uint32_t>(data[0]) | (data[1] << 8) |
@@ -426,7 +438,7 @@ void UsbTransport_CE::write(const uint8_t *data, std::size_t len) {
                         (data[6] << 16) | (data[7] << 24);
             }
             PushEventW(L"写#%d len=%u tx=%d magic=%08X cmd=%u",
-                       s_write_count, (unsigned)len, tx, magic, cmd);
+                       impl_->write_count, (unsigned)len, tx, magic, cmd);
         }
         if (tx <= 0) {
             PushEventW(L"写[libBoxUSB]失败: len=%u tx=%d", (unsigned)len, tx);

@@ -1260,8 +1260,13 @@ static DWORD WINAPI ClientThread(LPVOID) {
             g_conn_state = 0;
             InterlockedExchange(&g_write_failures, 0);  // reset self-heal counter per session
             auto t = std::make_unique<UsbTransport_CE>();
-            t->setErrorCallback([](int) {
-                InterlockedIncrement(&g_write_failures);
+            t->setErrorCallback([](int err) {
+                if (err == -999) {
+                    // Watchdog: USB endpoint stall / zero-read timeout
+                    InterlockedExchange(&g_write_failures, 5);
+                } else {
+                    InterlockedIncrement(&g_write_failures);
+                }
             });
             SetLineW(1, L"[1/3] 正在检测 USB 盒子 (0x1314:0x1520)...");
 
@@ -1280,12 +1285,11 @@ static DWORD WINAPI ClientThread(LPVOID) {
                                        nullptr, 0, nullptr);
 
             while (InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&g_running), 1, 1) == 1) {
-                // Self-heal: after 5 consecutive transport write failures the
-                // box link is stale (e.g. iPhone replug reset the gadget) —
-                // tear down and rebuild the whole connection automatically.
+                // Self-heal: after 5 consecutive transport write failures or watchdog trigger
+                // the box link is stale — tear down and rebuild the whole connection automatically.
                 if (InterlockedCompareExchange(&g_write_failures, 0, 0) >= 5) {
-                    PushEventW(L"自愈: 传输层连续写失败，自动重建连接...");
-                    SetLineW(1, L"[自愈] USB 链路失效，正在自动重连...");
+                    PushEventW(L"自愈: 检测到链路异常/假死，自动重建连接...");
+                    SetLineW(1, L"[自愈] USB 链路异常，正在自动重连...");
                     break;
                 }
                 Sleep(200);

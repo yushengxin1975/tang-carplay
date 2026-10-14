@@ -127,7 +127,9 @@ int host_recv(void *buf, int size, int timeout_ms) {
     int ready = select(0, &rfds, nullptr, nullptr, &tv);
     if (ready <= 0) return -1;  // timeout (matches vendor empty read)
 
-    int n = recv(g_sock, static_cast<char *>(buf), size, 0);
+    int cap = size - 1;
+    std::vector<char> tmp(static_cast<size_t>(cap));
+    int n = recv(g_sock, tmp.data(), cap, 0);
     if (n <= 0) {
         // select() said readable but recv failed/EOF: the connection is dead
         // (graceful teardown or RST). Drop it so the next host_init
@@ -137,7 +139,9 @@ int host_recv(void *buf, int size, int timeout_ms) {
         return -1;
     }
 
-    return n;
+    std::memcpy(buf, tmp.data(), static_cast<size_t>(n));
+    static_cast<unsigned char *>(buf)[n] = 0x20;  // trailing status byte matching vendor CE DLL
+    return n + 1;
 }
 
 extern "C" __declspec(dllexport)

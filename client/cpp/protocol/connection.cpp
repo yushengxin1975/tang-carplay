@@ -66,16 +66,15 @@ void Connection::sendInit(bool encrypted, int work_mode) {
     const int mediaDelay = 0;
 
     // FastCarPlay order: dpi + work_mode BEFORE Init.
-    // Inter-message delay: libBoxUSB on CE lacks libusb's flow control.
-    // Without delays the box's USB buffer overflows during the ~12-message
-    // burst, causing tx=0 timeouts and missed messages (e.g. Control(1002)
-    // autoconnect), so CarPlay never launches.
+    // Inter-message delay: give embedded WinCE USB host controller and box gadget FIFO
+    // sufficient pacing (80-120ms) to process and latch each config file before the next.
+    // Blasting 26 writes back-to-back causes gadget endpoint 0x02 to stall.
     send(Message::File("/tmp/screen_dpi", 120));
-    Sleep(30);
+    Sleep(80);
     send(Message::File("/etc/android_work_mode", 1));  // 1 = CarPlay (FastCarPlay)
-    Sleep(30);
+    Sleep(80);
     send(Message::Init(width, height, fps));
-    Sleep(50);
+    Sleep(120);
 
     // JSON_CONTROL: critical session config.
     char json[256];
@@ -85,31 +84,31 @@ void Connection::sendInit(bool encrypted, int work_mode) {
         "\"GNSSCapability\":7,\"DashboardInfo\":1,\"UseBTPhone\":0}",
         syncTime, mediaDelay, drivePosition, width, height);
     send(Message::String(Cmd::JSON_CONTROL, json));
-    Sleep(50);
+    Sleep(120);
 
     // Day/night mode JSON.
     char dn[64];
     std::snprintf(dn, sizeof(dn), "{\"DayNightMode\":%d}", nightMode);
     send(Message::String(Cmd::DAYNIGHT, dn));
-    Sleep(30);
+    Sleep(80);
 
     send(Message::File("/tmp/night_mode", nightMode));
-    Sleep(30);
+    Sleep(80);
     send(Message::File("/tmp/charge_mode", 2));  // normal/strong charge
-    Sleep(30);
+    Sleep(80);
     send(Message::File("/etc/box_name", "CarPlay"));
-    Sleep(30);
+    Sleep(80);
     send(Message::File("/tmp/hand_drive_mode", drivePosition));
-    Sleep(30);
+    Sleep(80);
 
     send(Message::Control(7));     // microphone (micType 1)
-    Sleep(30);
+    Sleep(80);
     send(Message::Control(24));    // wifi channel (wifi5=false → 24)
-    Sleep(30);
+    Sleep(80);
     send(Message::Control(23));    // bluetooth audio off (→ 23)
-    Sleep(30);
+    Sleep(80);
     send(Message::Control(1002));  // autoconnect
-    Sleep(200);  // let the box process autoconnect before heartbeats start
+    Sleep(400);  // let the box process autoconnect and settle gadget endpoints before heartbeats start
 }
 
 void Connection::stop() {
@@ -147,6 +146,7 @@ void Connection::send(const Message &in) {
     // 16-byte header read to truncate/desync the gadget FIFO, stalling endpoint 0x02.
     transport_->write(reinterpret_cast<const uint8_t *>(&msg.header()), sizeof(Header));
     if (msg.payload_size() > 0) {
+        Sleep(5);  // 5ms delay to let box firmware complete 16-byte header read before reading payload
         transport_->write(msg.payload(), msg.payload_size());
     }
 }
