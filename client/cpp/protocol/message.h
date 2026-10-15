@@ -69,15 +69,15 @@ public:
     // ----- Static factories (mirror FastCarPlay message.h) -----
 
     // CMD_OPEN with the 28-byte host-info payload the Box expects:
-    // [0]=width [4]=height [8]=fps [12]=5 [16]=49152 [20]=2 [24]=2 (all LE)
+    // [0]=width [4]=height [8]=fps [12]=5 [16]=32 [20]=1 [24]=2 (all LE)
     static Message Init(int width, int height, int fps) {
         Message m(Cmd::OPEN, /*encrypt=*/true, 28);
         m.write_u32(0, static_cast<uint32_t>(width));
         m.write_u32(4, static_cast<uint32_t>(height));
         m.write_u32(8, static_cast<uint32_t>(fps));
         m.write_u32(12, 5);
-        m.write_u32(16, 49152);  // 0xC000 matching FastCarPlay specification
-        m.write_u32(20, 2);      // 2 matching FastCarPlay specification
+        m.write_u32(16, 32);  // 0x20 matching AutoKit.exe 0x66ba4
+        m.write_u32(20, 1);   // 1 matching AutoKit.exe 0x66ba4
         m.write_u32(24, 2);
         return m;
     }

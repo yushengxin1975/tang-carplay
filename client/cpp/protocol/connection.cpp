@@ -75,6 +75,11 @@ void Connection::sendInit(bool encrypted, int work_mode) {
     Sleep(80);
     send(Message::Init(width, height, fps));
     Sleep(120);
+    // AutoKit reverse-engineered session activation & phone discovery
+    send(Message::Control(13));   // AutoKit standard session control 13
+    Sleep(80);
+    send(Message(Cmd::CMD_9, 1, /*encrypt=*/false)); // AutoKit phone discovery command (Cmd 9, val 1)
+    Sleep(80);
 
     // JSON_CONTROL: critical session config.
     char json[256];

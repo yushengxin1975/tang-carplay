@@ -204,15 +204,16 @@ void UsbTransport_CE::open(uint16_t vid, uint16_t pid) {
             PushEventW(L"加载官方 libBoxUSB.dll 驱动...");
             // Retry host_init: the USB device (0x1314:0x1520) may not be
             // fully enumerated right after EnsureDriverInstalled activates
-            // the driver. A single call races the enumeration and returns -1.
-            // Retry up to 6 times with 500ms spacing (~3s total window).
+            // the driver, especially when iPhone is already attached (takes 5-8s).
+            // Retry up to 30 times with 500ms spacing (~15s total window).
             int hrc = -1;
-            for (int attempt = 0; attempt < 6; ++attempt) {
+            for (int attempt = 0; attempt < 30; ++attempt) {
                 hrc = impl_->host_init();
                 if (hrc == 0) break;
-                PushEventW(L"libBoxUSB init 尝试 %d/6 返回 %d%s",
-                           attempt + 1, hrc, attempt < 5 ? L"，等待重试..." : L"");
-                if (attempt < 5) Sleep(500);
+                if ((attempt + 1) % 2 == 0 || attempt == 0) {
+                    PushEventW(L"libBoxUSB init 尝试 %d/30 (等待盒子就绪)...", attempt + 1);
+                }
+                if (attempt < 29) Sleep(500);
             }
             if (hrc == 0) {
                 impl_->box_lib = bMod;

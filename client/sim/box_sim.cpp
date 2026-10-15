@@ -81,6 +81,7 @@ static const char *cmd_name(uint32_t t) {
     case 6:   return "VIDEO_DATA";
     case 7:   return "AUDIO_DATA";
     case 8:   return "CONTROL";
+    case 9:   return "CMD_9";
     case 25:  return "JSON_CONTROL";
     case 153: return "SEND_FILE";
     case 162: return "DAYNIGHT";

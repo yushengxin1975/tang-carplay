@@ -1112,9 +1112,17 @@ static DWORD WINAPI VideoDecodeThread(LPVOID) {
 
 // ---------------- Heartbeat Thread ----------------
 static DWORD WINAPI HeartbeatThread(LPVOID) {
+    int tick = 0;
     while (InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&g_running), 1, 1) == 1) {
         if (g_conn) {
-            try { g_conn->send(carlinkit::Cmd::HEARTBEAT); } catch (...) {}
+            try {
+                g_conn->send(carlinkit::Cmd::HEARTBEAT);
+                // While waiting for iPhone (state 1), pulse CMD_9 phone discovery every 6s
+                // to trigger OTG host enumeration for late/hot-plugged iPhones.
+                if (g_conn_state == 1 && (++tick % 3 == 0)) {
+                    g_conn->send(carlinkit::Message(carlinkit::Cmd::CMD_9, 1, false));
+                }
+            } catch (...) {}
         }
         Sleep(2000);
     }
