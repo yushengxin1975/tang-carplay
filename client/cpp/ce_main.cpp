@@ -1214,10 +1214,17 @@ static DWORD WINAPI ClientThread(LPVOID) {
             if (n > nal_offset) {
                 EnterCriticalSection(&g_vid_cs);
                 const size_t h264_sz = n - nal_offset;
-                g_pending_video.resize(h264_sz + 64);
-                std::memcpy(g_pending_video.data(), p + nal_offset, h264_sz);
-                std::memset(g_pending_video.data() + h264_sz, 0, 64);
-                g_has_pending_video = TRUE;
+                if (g_has_pending_video) {
+                    size_t old_sz = g_pending_video.size() >= 64 ? g_pending_video.size() - 64 : g_pending_video.size();
+                    g_pending_video.resize(old_sz + h264_sz + 64);
+                    std::memcpy(g_pending_video.data() + old_sz, p + nal_offset, h264_sz);
+                    std::memset(g_pending_video.data() + old_sz + h264_sz, 0, 64);
+                } else {
+                    g_pending_video.resize(h264_sz + 64);
+                    std::memcpy(g_pending_video.data(), p + nal_offset, h264_sz);
+                    std::memset(g_pending_video.data() + h264_sz, 0, 64);
+                    g_has_pending_video = TRUE;
+                }
                 LeaveCriticalSection(&g_vid_cs);
                 SetEvent(g_hVidEvent);
             }

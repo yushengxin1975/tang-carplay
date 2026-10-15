@@ -362,10 +362,10 @@ void UsbTransport_CE::submitRead(std::size_t buf_size, RecvCallback cb) {
                         ++ok_reads;
                         int plen = rx;
                         // On Windows CE, the vendor libBoxUSB.dll (via CEUSBBOX.dll kernel driver)
-                        // appends a 1-byte completion status (0x20 = USBD_STATUS_SUCCESS) to
+                        // appends a 1-byte completion status code (0x20, 0x64, 0x12, etc.) to
                         // every bulk IN transfer and returns actual_length + 1.
-                        // Stripping this trailing byte restores exact protocol framing.
-                        if (im->use_box_lib && plen > 1 && buf[plen - 1] == 0x20) {
+                        // Stripping this trailing byte unconditionally restores exact protocol framing.
+                        if (im->use_box_lib && plen > 1) {
                             plen--;
                         }
                         if (ok_reads <= 10) {
