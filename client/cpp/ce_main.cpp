@@ -1274,7 +1274,7 @@ static DWORD WINAPI ClientThread(LPVOID) {
             g_conn->start();
 
             SetLineW(1, L"[2/3] USB 盒子已认领！正在初始化协议...");
-            PushEventW(L"发送 sendInit 配置脉冲...");
+            PushEventW(L"发送 sendInit 配置脉冲 (mode=2 iPhone)...");
             g_conn->sendInit(false, 2);
             PushEventW(L"配置完成！全时监听 iPhone 中...");
             g_conn_state = 1;

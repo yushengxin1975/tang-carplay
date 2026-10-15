@@ -50,7 +50,6 @@ void Connection::sendInit(bool encrypted, int work_mode) {
     // with the iPhone. Without them the box starts a partial session that
     // immediately tears down (audio pop → return to car UI, phone never
     // shows the CarPlay icon).
-    (void)work_mode;  // FastCarPlay hardcodes 1; keep param for API compat.
     if (encrypted) {
         std::srand(static_cast<unsigned>(std::time(nullptr)));
         const uint32_t seed = static_cast<uint32_t>(std::rand());
@@ -71,7 +70,8 @@ void Connection::sendInit(bool encrypted, int work_mode) {
     // Blasting 26 writes back-to-back causes gadget endpoint 0x02 to stall.
     send(Message::File("/tmp/screen_dpi", 120));
     Sleep(80);
-    send(Message::File("/etc/android_work_mode", 1));  // 1 = CarPlay (FastCarPlay)
+    // AutoKit reverse-engineered: 2 = WORK_MODE_IPHONE_CARPLAY, 1 = WORK_MODE_ANDROID_AUTO
+    send(Message::File("/etc/android_work_mode", work_mode));
     Sleep(80);
     send(Message::Init(width, height, fps));
     Sleep(120);

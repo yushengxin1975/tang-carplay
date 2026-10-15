@@ -160,7 +160,7 @@ int main(int argc, char **argv) {
 
     try {
         PushEventW(L"发送 sendInit 配置脉冲...");
-        co.sendInit(enc, 1);
+        co.sendInit(enc, 2);
         PushEventW(L"配置完成！全时监听中...");
     } catch (const std::exception &e) {
         std::printf("sendInit failed: %s\n", e.what());
@@ -188,7 +188,7 @@ int main(int argc, char **argv) {
             try {
                 co.stop();
                 co.start();
-                co.sendInit(enc, 1);
+                co.sendInit(enc, 2);
                 g_write_failures.store(0);
                 PushEventW(L"自愈完成，会话已重建");
             } catch (const std::exception &e) {
