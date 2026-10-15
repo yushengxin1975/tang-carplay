@@ -129,6 +129,7 @@ static CRITICAL_SECTION g_vid_cs;
 static HANDLE g_hVidEvent = nullptr;
 static std::vector<uint8_t> g_pending_video;
 static volatile BOOL g_has_pending_video = FALSE;
+static std::vector<uint8_t> g_cached_sps_pps; // AutoKit reverse-engineered: cached SPS/PPS headers
 
 // Persistent diagnostic file logging via WinCE native CreateFileW
 static HANDLE g_hLogFile = INVALID_HANDLE_VALUE;
@@ -1228,20 +1229,44 @@ static DWORD WINAPI ClientThread(LPVOID) {
                               h0, h1, h2, h3, h4, h5);
                 }
             }
-            if (n > nal_offset) {
+            const uint8_t *nal_ptr = (n > nal_offset) ? (p + nal_offset) : nullptr;
+            const size_t h264_sz = (n > nal_offset) ? (n - nal_offset) : 0;
+
+            // AutoKit reverse-engineered: Inspect NALU header for parameter sets & keyframes
+            int nalu_type = -1;
+            if (nal_ptr && h264_sz >= 4) {
+                size_t sc_len = 0;
+                if (nal_ptr[0] == 0 && nal_ptr[1] == 0 && nal_ptr[2] == 1) sc_len = 3;
+                else if (nal_ptr[0] == 0 && nal_ptr[1] == 0 && nal_ptr[2] == 0 && nal_ptr[3] == 1) sc_len = 4;
+                if (sc_len > 0 && h264_sz > sc_len) {
+                    nalu_type = nal_ptr[sc_len] & 0x1F;
+                }
+            }
+
+            // AutoKit reverse-engineered: Cache SPS (type 7) and PPS (type 8) headers
+            if (nal_ptr && (nalu_type == 7 || nalu_type == 8)) {
                 EnterCriticalSection(&g_vid_cs);
-                const size_t h264_sz = n - nal_offset;
-                if (g_has_pending_video) {
-                    size_t old_sz = g_pending_video.size() >= 64 ? g_pending_video.size() - 64 : g_pending_video.size();
-                    g_pending_video.resize(old_sz + h264_sz + 64);
-                    std::memcpy(g_pending_video.data() + old_sz, p + nal_offset, h264_sz);
-                    std::memset(g_pending_video.data() + old_sz + h264_sz, 0, 64);
+                g_cached_sps_pps.assign(nal_ptr, nal_ptr + h264_sz);
+                LeaveCriticalSection(&g_vid_cs);
+                LogDebugW(L"[VID] Cached SPS/PPS header (%u bytes, nalu=%d)", (unsigned)h264_sz, nalu_type);
+            }
+
+            if (nal_ptr && h264_sz > 0) {
+                EnterCriticalSection(&g_vid_cs);
+                // AutoKit reverse-engineered (0x24574..0x2460C):
+                // If this is an IDR keyframe (type 5) and doesn't already have SPS (type 7) prepended,
+                // prepend the cached SPS/PPS so FFmpeg avcodec_decode_video2 initializes context correctly!
+                if (nalu_type == 5 && !g_cached_sps_pps.empty()) {
+                    g_pending_video.resize(g_cached_sps_pps.size() + h264_sz + 64);
+                    std::memcpy(g_pending_video.data(), g_cached_sps_pps.data(), g_cached_sps_pps.size());
+                    std::memcpy(g_pending_video.data() + g_cached_sps_pps.size(), nal_ptr, h264_sz);
+                    std::memset(g_pending_video.data() + g_cached_sps_pps.size() + h264_sz, 0, 64);
                 } else {
                     g_pending_video.resize(h264_sz + 64);
-                    std::memcpy(g_pending_video.data(), p + nal_offset, h264_sz);
+                    std::memcpy(g_pending_video.data(), nal_ptr, h264_sz);
                     std::memset(g_pending_video.data() + h264_sz, 0, 64);
-                    g_has_pending_video = TRUE;
                 }
+                g_has_pending_video = TRUE;
                 LeaveCriticalSection(&g_vid_cs);
                 SetEvent(g_hVidEvent);
             }

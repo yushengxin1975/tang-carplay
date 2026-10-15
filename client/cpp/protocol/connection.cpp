@@ -64,14 +64,14 @@ void Connection::sendInit(bool encrypted, int work_mode) {
     const int syncTime = static_cast<int>(std::time(nullptr));
     const int mediaDelay = 0;
 
-    // FastCarPlay order: dpi + work_mode BEFORE Init.
-    // Inter-message delay: give embedded WinCE USB host controller and box gadget FIFO
-    // sufficient pacing (80-120ms) to process and latch each config file before the next.
-    // Blasting 26 writes back-to-back causes gadget endpoint 0x02 to stall.
-    send(Message::File("/tmp/screen_dpi", 120));
+    // 1. AutoKit reverse-engineered: Notify box gadget that host OS is Windows CE
+    send(Message::File("/etc/is_wince", 1));
     Sleep(80);
-    // AutoKit reverse-engineered: 2 = WORK_MODE_IPHONE_CARPLAY, 1 = WORK_MODE_ANDROID_AUTO
+    // 2. AutoKit reverse-engineered: 2 = WORK_MODE_IPHONE_CARPLAY, 1 = WORK_MODE_ANDROID_AUTO
     send(Message::File("/etc/android_work_mode", work_mode));
+    Sleep(80);
+    // 3. AutoKit reverse-engineered: charge mode 2
+    send(Message::File("/tmp/charge_mode", 2));
     Sleep(80);
     send(Message::Init(width, height, fps));
     Sleep(120);
