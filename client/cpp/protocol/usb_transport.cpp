@@ -377,6 +377,8 @@ void UsbTransport_CE::submitRead(std::size_t buf_size, RecvCallback cb) {
                             PushEventW(L"读[libBoxUSB] #%u: %d字节(有效%d) head=%02X %02X %02X %02X %02X %02X %02X %02X tail=%02X",
                                        (unsigned)ok_reads, rx, plen,
                                        b0,b1,b2,b3,b4,b5,b6,b7, tail);
+                        } else if ((ok_reads % 200) == 0) {
+                            PushEventW(L"USB活跃: 累计读取 %u 次 (当前 %d 字节)", (unsigned)ok_reads, plen);
                         }
                         empty_reads = 0;
                         im->recv(buf.data(), static_cast<std::size_t>(plen));
@@ -407,6 +409,8 @@ void UsbTransport_CE::submitRead(std::size_t buf_size, RecvCallback cb) {
                         ++ok_reads;
                         if (ok_reads <= 5) {
                             PushEventW(L"读[UKW] #%u: %u 字节", (unsigned)ok_reads, (unsigned)rx);
+                        } else if ((ok_reads % 200) == 0) {
+                            PushEventW(L"USB[UKW]活跃: 累计读取 %u 次 (当前 %u 字节)", (unsigned)ok_reads, (unsigned)rx);
                         }
                         empty_reads = 0;
                         im->recv(buf.data(), rx);

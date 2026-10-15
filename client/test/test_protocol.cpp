@@ -344,14 +344,14 @@ static void test_stream_framing_resync() {
     EXPECT(last_cmd == Cmd::VIDEO_DATA, "cmd preserved across chunks");
     EXPECT(last_payload == payload, "payload exactly preserved across chunks");
 
-    // 2. False magic rejection & resync test:
-    // Send noise, then FALSE magic (AA 55 AA 55) with invalid checksum, then authentic message.
+    // 2. Stream noise & invalid header rejection resync test:
+    // Send noise, then invalid header with illegal payload length, then authentic message.
     std::vector<uint8_t> noise = {0x99, 0x88, 0x77};
     std::vector<uint8_t> false_hdr(16, 0);
     Message::write_u32_le(false_hdr.data(), MAGIC);
-    Message::write_u32_le(false_hdr.data() + 4, 10);
+    Message::write_u32_le(false_hdr.data() + 4, 0x05000000); // 80 MB > MESSAGE_MAX_PAYLOAD
     Message::write_u32_le(false_hdr.data() + 8, 6);
-    Message::write_u32_le(false_hdr.data() + 12, 0x12345678); // NOT ~6!
+    Message::write_u32_le(false_hdr.data() + 12, 0);
 
     Message m_real(Cmd::HEARTBEAT, false, 0, nullptr);
     auto real_bytes = m_real.serialize();
@@ -362,7 +362,7 @@ static void test_stream_framing_resync() {
     stream.insert(stream.end(), real_bytes.begin(), real_bytes.end());
 
     ftp->deliver(stream);
-    EXPECT(last_cmd == Cmd::HEARTBEAT, "false magic rejected and resynced to authentic message");
+    EXPECT(last_cmd == Cmd::HEARTBEAT, "corrupted header rejected and resynced to authentic message");
     conn.stop();
 }
 

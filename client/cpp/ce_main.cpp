@@ -1270,8 +1270,17 @@ static DWORD WINAPI ClientThread(LPVOID) {
     };
 
     // Resilient auto-reconnect loop
+    bool is_first_session = true;
     while (InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&g_running), 1, 1) == 1) {
         try {
+            if (!is_first_session) {
+                // Settle delay: give USB host controller & dongle firmware time to settle
+                // gadget endpoint FIFO queues before opening a new session.
+                PushEventW(L"等待 USB 总线与盒子就绪 (800ms)...");
+                Sleep(800);
+            }
+            is_first_session = false;
+
             g_conn_state = 0;
             InterlockedExchange(&g_write_failures, 0);  // reset self-heal counter per session
             auto t = std::make_unique<UsbTransport_CE>();
@@ -1297,7 +1306,7 @@ static DWORD WINAPI ClientThread(LPVOID) {
             SetLineW(2, L"盒子常驻，插拔 iPhone 即可热拉起");
 
             HANDLE hbeat = CreateThread(nullptr, 256 * 1024, HeartbeatThread,
-                                       nullptr, 0, nullptr);
+                                        nullptr, 0, nullptr);
 
             while (InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&g_running), 1, 1) == 1) {
                 // Self-heal: after 5 consecutive transport write failures or watchdog trigger
@@ -1319,6 +1328,7 @@ static DWORD WINAPI ClientThread(LPVOID) {
                 delete g_conn;
                 g_conn = nullptr;
             }
+            Sleep(500); // Allow OS and driver to completely close handles and reset USB gadget FIFO
         } catch (const std::exception &e) {
             g_conn_state = 3;
             PushEventW(L"ERR: %S", e.what());

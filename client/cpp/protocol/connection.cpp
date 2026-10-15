@@ -166,21 +166,20 @@ void Connection::onRecv(const uint8_t *data, std::size_t len) {
         Header h;
         std::memcpy(&h, rx_buf_.data(), sizeof(Header));
 
-        // Strict header validation:
+        // Robust header validation:
         // 1. Magic must match MAGIC (plain) or MAGIC_ENC (encrypted)
-        // 2. typecheck MUST equal ~type (Carlinkit protocol checksum)
-        // 3. length must be non-negative and <= MESSAGE_MAX_PAYLOAD
+        // 2. length must be non-negative and <= MESSAGE_MAX_PAYLOAD
+        // Note: typecheck mismatch is non-fatal (FastCarPlay and real dongle firmwares
+        // often do not invert type on media/status transfers).
         bool valid_magic = (h.magic == MAGIC || h.magic == MAGIC_ENC);
-        bool valid_checksum = (h.typecheck == ~h.type);
         bool valid_len = (h.length >= 0 && static_cast<uint32_t>(h.length) <= MESSAGE_MAX_PAYLOAD);
 
-        if (!valid_magic || !valid_checksum || !valid_len) {
+        if (!valid_magic || !valid_len) {
             std::size_t sync_off = 1;
             while (sync_off + sizeof(Header) <= rx_buf_.size()) {
                 Header candidate;
                 std::memcpy(&candidate, rx_buf_.data() + sync_off, sizeof(Header));
                 if ((candidate.magic == MAGIC || candidate.magic == MAGIC_ENC) &&
-                    (candidate.typecheck == ~candidate.type) &&
                     (candidate.length >= 0 && static_cast<uint32_t>(candidate.length) <= MESSAGE_MAX_PAYLOAD)) {
                     break;
                 }
