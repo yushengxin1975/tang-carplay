@@ -132,6 +132,7 @@ void Connection::send(Cmd cmd, const std::vector<uint8_t> &payload) {
 
 void Connection::send(const Message &in) {
     if (!transport_) return;
+    LockGuard lock(send_mtx_);
     Message msg = in;
     if (cipher_enabled_ && msg.encrypted() && msg.payload_size() > 0) {
         // CFB128 stream mode: no padding needed, any length.

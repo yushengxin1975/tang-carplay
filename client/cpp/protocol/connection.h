@@ -110,6 +110,7 @@ private:
     ConnState state_ = ConnState::INITIALISING;
     bool was_unplugged_ = false;   // true after UNPLUGGED, cleared on next PLUGGED
     mutable Mutex mtx_;
+    mutable Mutex send_mtx_;
     std::vector<uint8_t> rx_buf_;
 };
 

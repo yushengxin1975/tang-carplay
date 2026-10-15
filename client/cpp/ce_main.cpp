@@ -1111,9 +1111,12 @@ static DWORD WINAPI VideoDecodeThread(LPVOID) {
 }
 
 // ---------------- Heartbeat Thread ----------------
+static volatile LONG g_hbeat_running = 0;
+
 static DWORD WINAPI HeartbeatThread(LPVOID) {
     int tick = 0;
-    while (InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&g_running), 1, 1) == 1) {
+    while (InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&g_running), 1, 1) == 1 &&
+           InterlockedCompareExchange(&g_hbeat_running, 1, 1) == 1) {
         if (g_conn) {
             try {
                 g_conn->send(carlinkit::Cmd::HEARTBEAT);
@@ -1124,7 +1127,13 @@ static DWORD WINAPI HeartbeatThread(LPVOID) {
                 }
             } catch (...) {}
         }
-        Sleep(2000);
+        for (int i = 0; i < 20; ++i) {
+            if (InterlockedCompareExchange(&g_hbeat_running, 1, 1) == 0 ||
+                InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&g_running), 1, 1) == 0) {
+                break;
+            }
+            Sleep(100);
+        }
     }
     return 0;
 }
@@ -1305,8 +1314,10 @@ static DWORD WINAPI ClientThread(LPVOID) {
             SetLineW(1, L"[2/3] 盒子就绪！请将 iPhone 插入盒子 USB");
             SetLineW(2, L"盒子常驻，插拔 iPhone 即可热拉起");
 
-            HANDLE hbeat = CreateThread(nullptr, 256 * 1024, HeartbeatThread,
-                                        nullptr, 0, nullptr);
+            HANDLE hbeat = nullptr;
+            InterlockedExchange(&g_hbeat_running, 1);
+            hbeat = CreateThread(nullptr, 256 * 1024, HeartbeatThread,
+                                 nullptr, 0, nullptr);
 
             while (InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&g_running), 1, 1) == 1) {
                 // Self-heal: after 5 consecutive transport write failures or watchdog trigger
@@ -1319,9 +1330,11 @@ static DWORD WINAPI ClientThread(LPVOID) {
                 Sleep(200);
             }
 
+            InterlockedExchange(&g_hbeat_running, 0);
             if (hbeat) {
-                WaitForSingleObject(hbeat, 1500);
+                WaitForSingleObject(hbeat, 2500);
                 CloseHandle(hbeat);
+                hbeat = nullptr;
             }
             if (g_conn) {
                 g_conn->stop();
@@ -1330,6 +1343,7 @@ static DWORD WINAPI ClientThread(LPVOID) {
             }
             Sleep(500); // Allow OS and driver to completely close handles and reset USB gadget FIFO
         } catch (const std::exception &e) {
+            InterlockedExchange(&g_hbeat_running, 0);
             g_conn_state = 3;
             PushEventW(L"ERR: %S", e.what());
             SetLineW(1, L"[等待] 驱动加载或未检测到盒子，重试中...");
@@ -1340,6 +1354,7 @@ static DWORD WINAPI ClientThread(LPVOID) {
             }
             Sleep(2000);
         } catch (...) {
+            InterlockedExchange(&g_hbeat_running, 0);
             g_conn_state = 3;
             PushEventW(L"ERR: unknown exception");
             Sleep(2000);
