@@ -345,20 +345,28 @@ static void test_stream_framing_resync() {
     EXPECT(last_payload == payload, "payload exactly preserved across chunks");
 
     // 2. Stream noise & invalid header rejection resync test:
-    // Send noise, then invalid header with illegal payload length, then authentic message.
+    // Send noise, invalid header with illegal payload length, false header with bad checksum,
+    // then authentic message. Verify resync ignores all false patterns.
     std::vector<uint8_t> noise = {0x99, 0x88, 0x77};
-    std::vector<uint8_t> false_hdr(16, 0);
-    Message::write_u32_le(false_hdr.data(), MAGIC);
-    Message::write_u32_le(false_hdr.data() + 4, 0x05000000); // 80 MB > MESSAGE_MAX_PAYLOAD
-    Message::write_u32_le(false_hdr.data() + 8, 6);
-    Message::write_u32_le(false_hdr.data() + 12, 0);
+    std::vector<uint8_t> false_hdr_len(16, 0);
+    Message::write_u32_le(false_hdr_len.data(), MAGIC);
+    Message::write_u32_le(false_hdr_len.data() + 4, 0x05000000); // 80 MB > MESSAGE_MAX_PAYLOAD
+    Message::write_u32_le(false_hdr_len.data() + 8, 6);
+    Message::write_u32_le(false_hdr_len.data() + 12, ~static_cast<uint32_t>(6));
+
+    std::vector<uint8_t> false_hdr_chk(16, 0);
+    Message::write_u32_le(false_hdr_chk.data(), MAGIC);
+    Message::write_u32_le(false_hdr_chk.data() + 4, 200);        // 200 B valid length
+    Message::write_u32_le(false_hdr_chk.data() + 8, 6);          // Cmd 6 (VIDEO_DATA)
+    Message::write_u32_le(false_hdr_chk.data() + 12, 0);         // corrupt typecheck (0 != ~6)
 
     Message m_real(Cmd::HEARTBEAT, false, 0, nullptr);
     auto real_bytes = m_real.serialize();
 
     std::vector<uint8_t> stream;
     stream.insert(stream.end(), noise.begin(), noise.end());
-    stream.insert(stream.end(), false_hdr.begin(), false_hdr.end());
+    stream.insert(stream.end(), false_hdr_len.begin(), false_hdr_len.end());
+    stream.insert(stream.end(), false_hdr_chk.begin(), false_hdr_chk.end());
     stream.insert(stream.end(), real_bytes.begin(), real_bytes.end());
 
     ftp->deliver(stream);

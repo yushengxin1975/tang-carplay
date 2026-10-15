@@ -1192,30 +1192,38 @@ static DWORD WINAPI ClientThread(LPVOID) {
     cb.on_any = [](Cmd c, const uint8_t *p, std::size_t n) {
         if (c == Cmd::VIDEO_DATA) {
             InterlockedIncrement(reinterpret_cast<volatile LONG *>(&g_video_frames));
-            // Scan for Annex-B start code (00 00 00 01 or 00 00 01) in first 64 bytes
+            // Robust Carlinkit video framing & Annex-B offset detection
             size_t nal_offset = 20; // Default Carlinkit subheader is 20 bytes
-            for (size_t i = 0; i + 4 <= n && i < 64; ++i) {
-                if (p[i] == 0 && p[i+1] == 0 && p[i+2] == 0 && p[i+3] == 1) {
-                    nal_offset = i;
-                    break;
-                }
-                if (p[i] == 0 && p[i+1] == 0 && p[i+2] == 1) {
-                    nal_offset = i;
-                    break;
+            uint32_t sub_w = (n >= 4) ? carlinkit::Message::read_u32_le(p) : 0;
+            uint32_t sub_h = (n >= 8) ? carlinkit::Message::read_u32_le(p + 4) : 0;
+            if (sub_w == 1024 && sub_h == 600) {
+                nal_offset = 20;
+            } else if (n >= 4 && p[0] == 0 && p[1] == 0 && (p[2] == 1 || (p[2] == 0 && p[3] == 1))) {
+                nal_offset = 0; // Raw Annex-B stream
+            } else {
+                for (size_t i = 0; i + 4 <= n && i < 256; ++i) {
+                    if (p[i] == 0 && p[i+1] == 0 && p[i+2] == 0 && p[i+3] == 1) {
+                        nal_offset = i;
+                        break;
+                    }
+                    if (p[i] == 0 && p[i+1] == 0 && p[i+2] == 1) {
+                        nal_offset = i;
+                        break;
+                    }
                 }
             }
             {
                 static volatile LONG g_vid_logged = 0;
                 LONG logged = InterlockedIncrement(reinterpret_cast<volatile LONG *>(&g_vid_logged));
-                if (logged <= 5) {
+                if (logged <= 10) {
                     unsigned b0 = (n > 0)?p[0]:0, b1 = (n > 1)?p[1]:0, b2 = (n > 2)?p[2]:0, b3 = (n > 3)?p[3]:0;
                     unsigned b4 = (n > 4)?p[4]:0, b5 = (n > 5)?p[5]:0, b6 = (n > 6)?p[6]:0, b7 = (n > 7)?p[7]:0;
                     const uint8_t *h = (n > nal_offset) ? (p + nal_offset) : nullptr;
                     size_t hlen = (n > nal_offset) ? (n - nal_offset) : 0;
                     unsigned h0 = (hlen > 0)?h[0]:0, h1 = (hlen > 1)?h[1]:0, h2 = (hlen > 2)?h[2]:0, h3 = (hlen > 3)?h[3]:0;
                     unsigned h4 = (hlen > 4)?h[4]:0, h5 = (hlen > 5)?h[5]:0;
-                    LogDebugW(L"[VID] video payload #%u: len=%u nal_off=%u head8=%02X %02X %02X %02X %02X %02X %02X %02X nalu=%02X %02X %02X %02X %02X %02X",
-                              (unsigned)logged, (unsigned)n, (unsigned)nal_offset,
+                    LogDebugW(L"[VID] video payload #%u: len=%u sub=(%ux%u) nal_off=%u head8=%02X %02X %02X %02X %02X %02X %02X %02X nalu=%02X %02X %02X %02X %02X %02X",
+                              (unsigned)logged, (unsigned)n, (unsigned)sub_w, (unsigned)sub_h, (unsigned)nal_offset,
                               b0, b1, b2, b3, b4, b5, b6, b7,
                               h0, h1, h2, h3, h4, h5);
                 }
@@ -1237,7 +1245,7 @@ static DWORD WINAPI ClientThread(LPVOID) {
                 LeaveCriticalSection(&g_vid_cs);
                 SetEvent(g_hVidEvent);
             }
-            if ((g_video_frames % 60) == 1) {
+            if (g_video_frames <= 20 || (g_video_frames % 30) == 0) {
                 SetLineW(3, L"视频: %u 帧 (解: %u) | 音量: %d%% | 触控: %u",
                          g_video_frames, g_decoded_frames, g_current_volume, g_touch_count);
                 LogDebugW(L"[STATS] Vid=%u (Dec=%u) Aud=%u Touch=%u Vol=%d",

@@ -170,18 +170,22 @@ void Connection::onRecv(const uint8_t *data, std::size_t len) {
         // Robust header validation:
         // 1. Magic must match MAGIC (plain) or MAGIC_ENC (encrypted)
         // 2. length must be non-negative and <= MESSAGE_MAX_PAYLOAD
-        // Note: typecheck mismatch is non-fatal (FastCarPlay and real dongle firmwares
-        // often do not invert type on media/status transfers).
+        // 3. typecheck must match ~type (FastCarPlay and official AutoKit specification)
+        //    Crucial: without typecheck verification, random byte sequences in compressed
+        //    H.264 video or audio PCM streams matching 0x55AA55AA get misdetected as valid
+        //    headers, causing byte-shifting and decoder failure.
         bool valid_magic = (h.magic == MAGIC || h.magic == MAGIC_ENC);
-        bool valid_len = (h.length >= 0 && static_cast<uint32_t>(h.length) <= MESSAGE_MAX_PAYLOAD);
+        bool valid_len   = (h.length >= 0 && static_cast<uint32_t>(h.length) <= MESSAGE_MAX_PAYLOAD);
+        bool valid_chk   = (h.typecheck == ~h.type);
 
-        if (!valid_magic || !valid_len) {
+        if (!valid_magic || !valid_len || !valid_chk) {
             std::size_t sync_off = 1;
             while (sync_off + sizeof(Header) <= rx_buf_.size()) {
                 Header candidate;
                 std::memcpy(&candidate, rx_buf_.data() + sync_off, sizeof(Header));
                 if ((candidate.magic == MAGIC || candidate.magic == MAGIC_ENC) &&
-                    (candidate.length >= 0 && static_cast<uint32_t>(candidate.length) <= MESSAGE_MAX_PAYLOAD)) {
+                    (candidate.length >= 0 && static_cast<uint32_t>(candidate.length) <= MESSAGE_MAX_PAYLOAD) &&
+                    (candidate.typecheck == ~candidate.type)) {
                     break;
                 }
                 sync_off++;
